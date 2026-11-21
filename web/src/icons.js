@@ -32,6 +32,10 @@ const P = {
   info: '<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 8h.01"/>',
   move: '<path d="M3.5 7.5A2 2 0 0 1 5.5 5.5h4l2 2.5h7a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/><path d="M10 13.5h5M13 11.5l2 2-2 2"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/>',
+  dup: '<rect x="8" y="8" width="12.5" height="12.5" rx="2.5"/><path d="M16 8V5.5A2 2 0 0 0 14 3.5H5.5a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2H8"/><path d="M12 14.2h5M14.5 11.7v5"/>',
+  image: '<rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="9" cy="10" r="1.8"/><path d="m20.5 16-5-5-9 8.5"/>',
+  more: '<circle cx="12" cy="5.5" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="12" cy="18.5" r="1.3" fill="currentColor"/>',
+  sortAz: '<path d="M4 7h9M4 12h6M4 17h3"/><path d="M17 5v14M14 16l3 3 3-3"/>',
   save: '<path d="M5 3.5h11l3.5 3.5v11A2 2 0 0 1 17.5 20h-11a2 2 0 0 1-2-2V5.5a2 2 0 0 1 .5-2z"/><path d="M8 3.5V8h7V3.5M8 20v-6h8v6"/>',
 };
 export function icon(name, cls = '') {

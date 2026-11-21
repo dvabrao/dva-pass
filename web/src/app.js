@@ -20,12 +20,12 @@ const DEF = {
   theme: 'dark', autolock: 5, lockOnLeave: false, clip: 30, showUser: true, sort: 'title',
   gen: { len: 20, upper: true, lower: true, digits: true, symbols: true, noAmb: true },
   brand: { name: 'DVA_Pass', logo: null, credit: 'Daniel Vale Abrão', contact: 'dvabrao@gmail.com', place: 'Ribeirão Preto · SP · 2026', tagline: 'Seu cofre de senhas, compatível com KeePass' },
-  bioAsked: {},
+  bioAsked: {}, cols: { g: 260, l: 400 },
 };
 let S = load();
 function load() {
   let s = {}; try { s = JSON.parse(localStorage.getItem('dva.settings') || '{}'); } catch {}
-  return { ...DEF, ...s, gen: { ...DEF.gen, ...(s.gen || {}) }, brand: { ...DEF.brand, ...(s.brand || {}) }, bioAsked: s.bioAsked || {} };
+  return { ...DEF, ...s, gen: { ...DEF.gen, ...(s.gen || {}) }, brand: { ...DEF.brand, ...(s.brand || {}) }, cols: { ...DEF.cols, ...(s.cols || {}) }, bioAsked: s.bioAsked || {} };
 }
 function saveS() { localStorage.setItem('dva.settings', JSON.stringify(S)); }
 function applyTheme() { document.documentElement.dataset.theme = S.theme; document.title = S.brand.name + ' ' + VERSION; }
@@ -74,11 +74,11 @@ function dialog({ title, body = '', html = '', buttons = [{ label: 'OK', value: 
     buttons.forEach(b => {
       const el = document.createElement('button'); el.className = 'btn ' + (b.cls || ''); el.textContent = b.label;
       el.onclick = () => { const v = typeof b.value === 'function' ? b.value(o) : b.value; if (v === false) return; close(v); };
-      $('.acts', o).appendChild(el);
+      $('.dialog > .acts', o).appendChild(el);
     });
     o.addEventListener('mousedown', e => { if (e.target === o) closer(); });
     document.body.appendChild(o); pushBack(closer);
-    o.addEventListener('keydown', e => { if (e.key === 'Escape') closer(); if (e.key === 'Enter' && e.target.tagName === 'INPUT') { const p = $('.acts .primary', o); p && p.click(); } });
+    o.addEventListener('keydown', e => { if (e.key === 'Escape') closer(); if (e.key === 'Enter' && e.target.tagName === 'INPUT') { const p = $('.dialog > .acts .primary', o); p && p.click(); } });
     onOpen && onOpen(o);
     const f = $('input,select,textarea', o); f && setTimeout(() => f.focus(), 30);
   });
@@ -99,7 +99,7 @@ window.DVA_back = () => { const fn = backStack.pop(); if (fn) { fn(); return tru
 let file = null;          // arquivo atual
 let db = null;            // Kdbx aberto
 let loadedHash = null;    // hash do arquivo como lido/gravado por último
-const V = { group: null, query: '', entry: null, pane: 'list', editing: false, reveal: false, collapsed: new Set() };
+const V = { group: null, query: '', entry: null, pane: 'list', editing: false, reveal: false, collapsed: new Set(), sel: new Set() };
 let saveState = 'ok', saveTimer = null, saving = null;
 let lastAct = Date.now(), hiddenAt = 0;
 
@@ -304,24 +304,29 @@ function renderVault() {
       <button class="ibtn show-m" id="bMenu" title="Pastas">${icon('menu')}</button>
       <div class="brand">${logoHtml()}${wordmark()}<span class="dbname">· ${esc(file.name)}</span></div>
       <span class="status ok" id="status"><span class="dot"></span><span class="stx">Salvo</span></span>
-      <button class="ibtn hide-m" id="bAdd" title="Nova entrada">${icon('plus')}</button>
+      <button class="ibtn hide-m" id="bAdd" title="Nova entrada (Ctrl+N)">${icon('plus')}</button>
+      <button class="ibtn" id="bDup" title="Achar duplicados">${icon('dup')}</button>
       <button class="ibtn" id="bGen" title="Gerador de senhas">${icon('dice')}</button>
       <button class="ibtn" id="bSet" title="Configurações">${icon('gear')}</button>
-      <button class="ibtn" id="bLock" title="Bloquear">${icon('lock')}</button>
+      <button class="ibtn" id="bLock" title="Bloquear (Ctrl+L)">${icon('lock')}</button>
     </header>
     <div class="vault p-list" id="vault">
       <aside class="groups" id="groups"></aside>
       <section class="list" id="list"></section>
       <section class="detail" id="detail"></section>
+      <div class="splitter" id="sp1" title="Arraste para ajustar a largura · duplo clique volta ao padrão"></div>
+      <div class="splitter" id="sp2" title="Arraste para ajustar a largura · duplo clique volta ao padrão"></div>
       <button class="fab" id="fab" title="Nova entrada">${icon('plus')}</button>
     </div>`;
   $('#bMenu').onclick = () => setPane(V.pane === 'groups' ? 'list' : 'groups');
   $('#bAdd').onclick = $('#fab').onclick = () => startEdit(null);
+  $('#bDup').onclick = () => openDuplicates();
   $('#bGen').onclick = () => openGenerator();
   $('#bSet').onclick = () => openSettings();
   $('#bLock').onclick = lock;
   $('#status').onclick = () => { if (saveState === 'err') save(); };
   setStatus(saveState === 'err' ? 'err' : 'ok');
+  applyCols(); bindSplitters();
   renderGroups(); renderList(); renderDetail(); setPane(V.pane);
 }
 function setPane(p) {
@@ -334,40 +339,197 @@ function paneBack() {
   if (V.editing) { V.editing = false; renderDetail(); if (!V.entry) return setPane('list'); return pushBack(paneBack); }
   setPane('list');
 }
+function rerender() { renderGroups(); renderList(); renderDetail(); }
+
+// ---------- largura das colunas ----------
+function applyCols() {
+  const v = $('#vault'); if (!v) return;
+  v.style.setProperty('--gw', (S.cols.g || 260) + 'px'); v.style.setProperty('--lw', (S.cols.l || 400) + 'px');
+}
+function bindSplitters() {
+  const v = $('#vault');
+  const drag = (sp, key, min, max) => {
+    sp.addEventListener('pointerdown', (e) => {
+      if (window.innerWidth <= 860) return;
+      e.preventDefault(); sp.setPointerCapture(e.pointerId); sp.classList.add('on'); document.body.classList.add('resizing');
+      const start = e.clientX, w0 = S.cols[key];
+      const mv = (ev) => { S.cols[key] = Math.max(min, Math.min(max, w0 + ev.clientX - start)); applyCols(); };
+      const up = () => { sp.removeEventListener('pointermove', mv); sp.removeEventListener('pointerup', up); sp.classList.remove('on'); document.body.classList.remove('resizing'); saveS(); };
+      sp.addEventListener('pointermove', mv); sp.addEventListener('pointerup', up);
+    });
+    sp.ondblclick = () => { S.cols[key] = DEF.cols[key]; applyCols(); saveS(); };
+  };
+  drag($('#sp1'), 'g', 170, 520); drag($('#sp2'), 'l', 240, 760);
+}
+
+// ---------- ícones das pastas (ícones personalizados do KeePass) ----------
+const iconCache = new Map();
+function customIconUrl(uuid) {
+  if (!uuid || !db) return null; const id = uuid.id || uuid.toString();
+  const ci = db.meta.customIcons.get(id); if (!ci) return null;
+  const key = id + ':' + ci.data.byteLength;
+  if (!iconCache.has(key)) iconCache.set(key, URL.createObjectURL(new Blob([ci.data], { type: 'image/png' })));
+  return iconCache.get(key);
+}
+function groupIcon(g, cls = '') {
+  if (g === binGroup()) return icon('bin', cls);
+  const u = customIconUrl(g.customIcon);
+  return u ? `<img class="gicon ${cls}" src="${u}" alt="">` : icon('folder', cls);
+}
+const EMOJIS = ['📁', '🗂️', '💼', '🏗️', '🛣️', '🏛️', '⚖️', '📑', '🧾', '💰', '🏦', '💳', '🏠', '👨‍👩‍👧', '🧒', '👵', '🩺', '💊', '🏥', '🎓', '📚', '✉️', '🌐', '🛒', '📦', '🚗', '✈️', '🧳', '📱', '💻', '🖥️', '🤖', '⚙️', '🔧', '🔐', '🔑', '🛡️', '☁️', '🎮', '🎬', '🎵', '📷', '⛪', '🐶', '⭐', '❤️', '🗄️', '🗑️'];
+function emojiPng(ch) {
+  const s = 64, c = document.createElement('canvas'); c.width = c.height = s; const x = c.getContext('2d');
+  x.textAlign = 'center'; x.textBaseline = 'middle'; x.font = '52px "Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji",sans-serif';
+  x.fillText(ch, s / 2, s / 2 + 3); return c;
+}
+function canvasToBuf(c) { return new Promise(r => c.toBlob(b => b.arrayBuffer().then(r), 'image/png')); }
+function imageFileToCanvas(f) {
+  return new Promise((res, rej) => {
+    const img = new Image(); img.onload = () => {
+      const s = 64, c = document.createElement('canvas'); c.width = c.height = s; const x = c.getContext('2d');
+      const k = Math.min(s / img.width, s / img.height); x.drawImage(img, (s - img.width * k) / 2, (s - img.height * k) / 2, img.width * k, img.height * k);
+      URL.revokeObjectURL(img.src); res(c);
+    }; img.onerror = rej; img.src = URL.createObjectURL(f);
+  });
+}
+async function setGroupIcon(g, canvas, name) {
+  if (!canvas) { g.customIcon = undefined; g.times.update(); touch(); rerender(); return; }
+  const data = await canvasToBuf(canvas);
+  const uuid = kdbxweb.KdbxUuid.random();
+  db.meta.customIcons.set(uuid.id, { data, name: name || '', lastModified: new Date() });
+  g.customIcon = uuid; g.times.update(); touch(); rerender();
+}
+async function chooseGroupIcon(g) {
+  const used = [...new Set(allGroups().map(x => x.g.customIcon && x.g.customIcon.id).filter(id => id && db.meta.customIcons.has(id)))];
+  await dialog({
+    title: 'Ícone da pasta', body: `Escolha um ícone para "${g.name}". Ele fica gravado no cofre e também aparece no KeePass.`,
+    html: `${used.length ? `<div class="sect" style="margin-top:0">Já usados neste cofre</div><div class="emogrid">${used.map(id => `<button class="emo" data-used="${id}"><img src="${customIconUrl({ id })}" alt=""></button>`).join('')}</div>` : ''}
+      <div class="sect">Escolher</div><div class="emogrid">${EMOJIS.map(e => `<button class="emo" data-e="${e}">${e}</button>`).join('')}</div>
+      <div class="acts" style="justify-content:flex-start;margin-top:12px"><button class="btn sm" id="icUp">${icon('download')} Usar uma imagem minha</button><button class="btn sm ghost" id="icNone">Ícone padrão</button></div>`,
+    buttons: [{ label: 'Fechar', value: null, cls: 'ghost' }],
+    onOpen: (o) => {
+      const done = () => o.querySelector('.dialog > .acts .btn').click();
+      o.querySelectorAll('[data-e]').forEach(b => b.onclick = async () => { await setGroupIcon(g, emojiPng(b.dataset.e), b.dataset.e); done(); toast('Ícone alterado'); });
+      o.querySelectorAll('[data-used]').forEach(b => b.onclick = () => { g.customIcon = new kdbxweb.KdbxUuid(b.dataset.used); g.times.update(); touch(); rerender(); done(); toast('Ícone alterado'); });
+      $('#icNone', o).onclick = () => { setGroupIcon(g, null); done(); };
+      $('#icUp', o).onclick = () => {
+        const i = document.createElement('input'); i.type = 'file'; i.accept = 'image/*';
+        i.onchange = async () => { if (!i.files[0]) return; await setGroupIcon(g, await imageFileToCanvas(i.files[0]), i.files[0].name); done(); toast('Ícone alterado'); };
+        i.click();
+      };
+    },
+  });
+}
+
+// ---------- ações de pasta ----------
+async function newGroup(parent) {
+  const bin = binGroup();
+  if (!parent || parent === bin || inBin(parent)) parent = V.group && V.group !== bin && !inBin(V.group) ? V.group : db.getDefaultGroup();
+  const n = await promptBox('Nova pasta', parent === db.getDefaultGroup() ? 'Nome da pasta' : `Dentro de "${parent.name}" — nome da pasta`); if (!n) return;
+  const g = db.createGroup(parent, n); V.collapsed.delete(parent.uuid.id); V.group = g; touch(); renderGroups(); renderList(); setPane('list');
+  toast('Pasta criada', 'folderPlus');
+}
+async function renameGroup(g) { const n = await promptBox('Renomear pasta', 'Nome', g.name); if (!n) return; g.name = n; g.times.update(); touch(); rerender(); }
+async function deleteGroup(g) {
+  if (!await confirmBox('Excluir pasta?', `"${g.name}" e tudo que estiver dentro vão para a Lixeira.`, 'Excluir', true)) return;
+  db.remove(g); if (V.group === g || (V.group && isInside(V.group, g))) V.group = null; V.entry = null; touch(); rerender();
+}
+function isInside(g, ancestor) { while (g) { if (g === ancestor) return true; g = g.parentGroup; } return false; }
+function groupMenu(g, x, y) {
+  const bin = binGroup(); const isRoot = g === db.getDefaultGroup();
+  const items = g === bin ? [['trash', 'Esvaziar Lixeira', () => emptyBin()]]
+    : [['folderPlus', 'Nova subpasta', () => newGroup(g)], ['image', 'Ícone da pasta…', () => chooseGroupIcon(g)], ['edit', 'Renomear', () => renameGroup(g)], ['plus', 'Nova entrada aqui', () => { V.group = g; startEdit(null); }]]
+      .concat(isRoot ? [] : [['trash', 'Excluir pasta', () => deleteGroup(g), 'danger']]);
+  popMenu(items, x, y);
+}
+function popMenu(items, x, y) {
+  document.querySelectorAll('.cmenu').forEach(m => m.remove());
+  const m = document.createElement('div'); m.className = 'cmenu';
+  m.innerHTML = items.map(([ic, l, , cls], i) => `<button class="${cls || ''}" data-mi="${i}">${icon(ic)}<span>${esc(l)}</span></button>`).join('');
+  document.body.appendChild(m);
+  const r = m.getBoundingClientRect();
+  m.style.left = Math.min(x, innerWidth - r.width - 8) + 'px'; m.style.top = Math.min(y, innerHeight - r.height - 8) + 'px';
+  const close = () => { m.remove(); document.removeEventListener('pointerdown', out, true); popBack(close); };
+  const out = (e) => { if (!m.contains(e.target)) close(); };
+  setTimeout(() => document.addEventListener('pointerdown', out, true), 0); pushBack(close);
+  m.querySelectorAll('[data-mi]').forEach(b => b.onclick = () => { close(); items[+b.dataset.mi][2](); });
+}
+async function emptyBin() {
+  const bin = binGroup(); if (!bin) return;
+  if (!await confirmBox('Esvaziar a Lixeira?', 'As entradas serão apagadas de vez. Não dá para desfazer.', 'Esvaziar', true)) return;
+  [...bin.groups].forEach(x => db.move(x, null)); [...bin.entries].forEach(x => db.move(x, null));
+  V.entry = null; V.sel.clear(); touch(); rerender();
+}
+
+// ---------- arrastar e soltar ----------
+let dragItems = null; // { groups:[], entries:[] }
+function startDrag(ev, items) {
+  dragItems = items; ev.dataTransfer.effectAllowed = 'move'; ev.dataTransfer.setData('text/plain', 'dva-pass');
+  const n = items.entries.length + items.groups.length;
+  const gh = document.createElement('div'); gh.className = 'dragghost';
+  gh.textContent = items.groups.length && !items.entries.length ? '📁 ' + items.groups[0].name : `${n} ${n > 1 ? 'entradas' : 'entrada'}`;
+  document.body.appendChild(gh); ev.dataTransfer.setDragImage(gh, 12, 12); setTimeout(() => gh.remove(), 0);
+  document.body.classList.add('dragging');
+}
+function canDrop(target) {
+  if (!dragItems || !target) return false;
+  return dragItems.groups.every(g => !isInside(target, g) && g.parentGroup !== target) && (dragItems.groups.length || dragItems.entries.some(e => e.parentGroup !== target));
+}
+function bindDropTarget(el, getGroup) {
+  el.addEventListener('dragover', (ev) => { const t = getGroup(); if (canDrop(t)) { ev.preventDefault(); ev.dataTransfer.dropEffect = 'move'; el.classList.add('dropover'); } });
+  el.addEventListener('dragleave', () => el.classList.remove('dropover'));
+  el.addEventListener('drop', (ev) => { ev.preventDefault(); el.classList.remove('dropover'); doDrop(getGroup()); });
+}
+function doDrop(target) {
+  if (!canDrop(target)) return;
+  const bin = binGroup(); const toBin = target === bin;
+  const { groups, entries } = dragItems; dragItems = null;
+  groups.forEach(g => toBin ? db.remove(g) : db.move(g, target));
+  entries.filter(e => e.parentGroup !== target).forEach(e => toBin ? db.remove(e) : db.move(e, target));
+  V.sel.clear(); touch(); rerender();
+  const n = groups.length + entries.length;
+  toast(toBin ? `${n} item(ns) na Lixeira` : groups.length && !entries.length ? `Pasta movida para ${target.name}` : `${entries.length} entrada(s) movida(s) para ${target.name}`, 'move');
+}
+document.addEventListener('dragend', () => { dragItems = null; document.body.classList.remove('dragging'); document.querySelectorAll('.dropover').forEach(x => x.classList.remove('dropover')); });
+
+function findGroup(id) { if (!id) return null; return allGroups().map(x => x.g).find(g => g.uuid.id === id) || null; }
 
 function renderGroups() {
   const el = $('#groups'); if (!el || !db) return;
-  const bin = binGroup();
+  const bin = binGroup(); const root = db.getDefaultGroup();
   const count = (g) => { let n = 0; for (const e of g.allEntries()) if (!inBin(e)) n++; return n; };
-  const total = count(db.getDefaultGroup());
-  let h = `<div class="gsec">Cofre</div>
-    <button class="gitem ${V.group === null ? 'sel' : ''}" data-g="">${icon('layers')}<span>Todas as entradas</span><span class="cnt">${total}</span></button>
-    <div class="gsec">Pastas</div>`;
+  const total = count(root);
+  const scroll = el.querySelector('.gscroll') ? el.querySelector('.gscroll').scrollTop : 0;
+  let h = `<div class="ghead"><span>Pastas</span><button class="btn sm" id="bNG" title="Nova pasta">${icon('folderPlus')} Nova pasta</button></div><div class="gscroll">
+    <button class="gitem ${V.group === null ? 'sel' : ''}" data-all="1">${icon('layers')}<span class="gn">Todas as entradas</span><span class="cnt">${total}</span></button>`;
   const walk = (g, d) => {
     if (g === bin) return;
     const has = g.groups.some(c => c !== bin); const col = V.collapsed.has(g.uuid.id);
-    h += `<button class="gitem ${V.group === g ? 'sel' : ''}" data-g="${g.uuid.id}" style="padding-left:${10 + d * 16}px">
-      ${has ? `<span class="tw" data-tw="${g.uuid.id}">${icon(col ? 'chevron' : 'down')}</span>` : ''}${icon('folder')}<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(g.name)}</span><span class="cnt">${g.entries.length || ''}</span></button>`;
+    h += `<button class="gitem ${V.group === g ? 'sel' : ''}" data-g="${g.uuid.id}" ${g !== root ? 'draggable="true"' : ''} style="padding-left:${10 + d * 16}px">
+      ${has ? `<span class="tw" data-tw="${g.uuid.id}">${icon(col ? 'chevron' : 'down')}</span>` : `<span class="tw"></span>`}${groupIcon(g)}<span class="gn">${esc(g.name)}</span><span class="cnt">${g.entries.length || ''}</span></button>`;
     if (!col) g.groups.forEach(c => walk(c, d + 1));
   };
-  walk(db.getDefaultGroup(), 0);
-  if (bin) h += `<div class="gsec">Lixeira</div><button class="gitem ${V.group === bin ? 'sel' : ''}" data-g="${bin.uuid.id}">${icon('bin')}<span>Lixeira</span><span class="cnt">${count(bin) || ''}</span></button>`;
-  h += `<div style="padding:12px 4px"><button class="btn sm ghost" id="bNG">${icon('folderPlus')} Nova pasta</button></div>`;
+  walk(root, 0);
+  if (bin) h += `<div class="gsec">Lixeira</div><button class="gitem ${V.group === bin ? 'sel' : ''}" data-g="${bin.uuid.id}">${icon('bin')}<span class="gn">Lixeira</span><span class="cnt">${count(bin) || ''}</span></button>`;
+  h += `<div class="ghint">Arraste entradas e pastas para cá para organizar. Clique com o botão direito numa pasta para mais opções.</div></div>`;
   el.innerHTML = h;
-  el.querySelectorAll('[data-tw]').forEach(t => t.onclick = (ev) => { ev.stopPropagation(); const id = t.dataset.tw; V.collapsed.has(id) ? V.collapsed.delete(id) : V.collapsed.add(id); renderGroups(); });
-  el.querySelectorAll('[data-g]').forEach(b => b.onclick = () => {
-    V.group = b.dataset.g ? allGroups().map(x => x.g).find(g => g.uuid.id === b.dataset.g) || (bin && bin.uuid.id === b.dataset.g ? bin : null) : null;
-    V.query = ''; renderGroups(); renderList(); setPane('list');
+  el.querySelector('.gscroll').scrollTop = scroll;
+  el.querySelectorAll('[data-tw]').forEach(t => t.onclick = (ev) => { ev.stopPropagation(); const id = t.dataset.tw; if (!id) return; V.collapsed.has(id) ? V.collapsed.delete(id) : V.collapsed.add(id); renderGroups(); });
+  el.querySelector('[data-all]').onclick = () => { V.group = null; V.query = ''; V.sel.clear(); rerender(); setPane('list'); };
+  el.querySelectorAll('[data-g]').forEach(b => {
+    const g = b.dataset.g === (bin && bin.uuid.id) ? bin : findGroup(b.dataset.g);
+    b.onclick = () => { V.group = g; V.query = ''; V.sel.clear(); rerender(); setPane('list'); };
+    b.oncontextmenu = (ev) => { ev.preventDefault(); groupMenu(g, ev.clientX, ev.clientY); };
+    let lp; b.addEventListener('touchstart', (ev) => { const t = ev.touches[0]; lp = setTimeout(() => groupMenu(g, t.clientX, t.clientY), 550); }, { passive: true });
+    ['touchend', 'touchmove', 'touchcancel'].forEach(x => b.addEventListener(x, () => clearTimeout(lp), { passive: true }));
+    if (b.draggable) b.addEventListener('dragstart', (ev) => startDrag(ev, { groups: [g], entries: [] }));
+    bindDropTarget(b, () => g);
   });
-  $('#bNG').onclick = async () => {
-    const n = await promptBox('Nova pasta', 'Nome da pasta'); if (!n) return;
-    const parent = V.group && V.group !== bin ? V.group : db.getDefaultGroup();
-    const g = db.createGroup(parent, n); V.group = g; touch(); renderGroups(); renderList(); setPane('list');
-  };
+  $('#bNG').onclick = () => newGroup(null);
 }
 
 function visibleEntries() {
-  const bin = binGroup(); const q = norm(V.query);
+  const q = norm(V.query);
   let src;
   if (V.group) src = V.query ? [...V.group.allEntries()] : V.group.entries.slice();
   else src = [...db.getDefaultGroup().allEntries()].filter(e => !inBin(e));
@@ -382,44 +544,137 @@ function visibleEntries() {
   }
   return src.sort((a, b) => S.sort === 'mod' ? (b.times.lastModTime - a.times.lastModTime) : fld(a, 'Title').localeCompare(fld(b, 'Title'), 'pt-BR', { sensitivity: 'base' }));
 }
+function entryAvatar(e) {
+  const u = customIconUrl(e.customIcon);
+  return u ? `<span class="avatar" style="background:var(--surface2)"><img src="${u}" alt="" style="width:26px;height:26px"></span>` : avatar(fld(e, 'Title'));
+}
 
+let lastList = [], anchorIdx = -1;
 function renderList() {
   const el = $('#list'); if (!el || !db) return;
   const bin = binGroup(); const g = V.group;
-  const isBin = g && g === bin; const isRoot = g === db.getDefaultGroup();
+  const isBin = g && g === bin;
   const title = g ? (isBin ? 'Lixeira' : g.name) : 'Todas as entradas';
   const searchFocused = document.activeElement && document.activeElement.id === 'q';
+  const oldUl = $('#entries'); const scroll = oldUl ? oldUl.scrollTop : 0;
   el.innerHTML = `
     <div class="searchbar"><div class="input">${icon('search')}<input id="q" type="search" placeholder="Buscar em todo o cofre…" value="${esc(V.query)}" autocomplete="off" spellcheck="false"></div></div>
-    <div class="lhead"><h2>${esc(title)}</h2>
-      ${g && !isBin ? `<button class="ibtn" id="gAdd" title="Subpasta">${icon('folderPlus')}</button>` : ''}
-      ${g && !isBin && !isRoot ? `<button class="ibtn" id="gRen" title="Renomear pasta">${icon('edit')}</button><button class="ibtn" id="gDel" title="Excluir pasta">${icon('trash')}</button>` : ''}
+    <div class="lhead">${g && !isBin ? `<span class="lhicon">${groupIcon(g)}</span>` : ''}<h2>${esc(title)}</h2>
+      ${!isBin ? `<button class="ibtn" id="gAdd" title="Nova pasta${g ? ' aqui dentro' : ''}">${icon('folderPlus')}</button>` : ''}
+      ${g && !isBin ? `<button class="ibtn" id="gMore" title="Opções da pasta">${icon('more')}</button>` : ''}
       ${isBin ? `<button class="btn sm danger" id="gEmpty">${icon('trash')} Esvaziar</button>` : ''}
-      <button class="ibtn" id="sort" title="Ordenar">${icon(S.sort === 'mod' ? 'clock' : 'layers')}</button>
+      <button class="ibtn" id="sort" title="${S.sort === 'mod' ? 'Ordenado por alteração recente' : 'Ordenado por nome'}">${icon(S.sort === 'mod' ? 'clock' : 'sortAz')}</button>
     </div>
     <ul class="entries" id="entries"></ul>`;
-  const ul = $('#entries'); const list = visibleEntries();
+  const ul = $('#entries'); const list = visibleEntries(); lastList = list;
+  for (const e of [...V.sel]) if (!list.includes(e)) V.sel.delete(e);
   const subs = (!V.query && g) ? g.groups.filter(c => c !== bin) : [];
-  ul.innerHTML = subs.map(c => `<li><button class="eitem" data-sg="${c.uuid.id}"><span class="avatar" style="background:var(--surface2);color:var(--accent-hi)">${icon('folder')}</span><span class="meta"><div class="t">${esc(c.name)}</div><div class="u">${c.entries.length} entrada(s)</div></span>${icon('chevron')}</button></li>`).join('')
-    + list.map((e, i) => `<li><button class="eitem ${V.entry === e ? 'sel' : ''}" data-i="${i}">${avatar(fld(e, 'Title'))}<span class="meta"><div class="t">${esc(fld(e, 'Title') || '(sem título)')}</div>${S.showUser ? `<div class="u">${esc(fld(e, 'UserName') || fld(e, 'URL') || ' ')}</div>` : ''}${(V.query || !g) && e.parentGroup ? `<div class="g">${esc(groupPath(e.parentGroup))}</div>` : ''}</span></button></li>`).join('');
+  ul.innerHTML = subs.map(c => `<li><button class="eitem" data-sg="${c.uuid.id}" draggable="true"><span class="avatar" style="background:var(--surface2);color:var(--accent-hi)">${groupIcon(c)}</span><span class="meta"><div class="t">${esc(c.name)}</div><div class="u">${c.entries.length} entrada(s)${c.groups.length ? ` · ${c.groups.length} pasta(s)` : ''}</div></span>${icon('chevron')}</button></li>`).join('')
+    + list.map((e, i) => `<li><button class="eitem ${V.sel.has(e) ? 'msel' : ''} ${V.entry === e && V.sel.size < 2 ? 'sel' : ''}" data-i="${i}" draggable="true">${entryAvatar(e)}<span class="meta"><div class="t">${esc(fld(e, 'Title') || '(sem título)')}</div>${S.showUser ? `<div class="u">${esc(fld(e, 'UserName') || fld(e, 'URL') || ' ')}</div>` : ''}${(V.query || !g) && e.parentGroup ? `<div class="g">${esc(groupPath(e.parentGroup))}</div>` : ''}</span></button></li>`).join('');
   if (!list.length && !subs.length) ul.innerHTML = `<div class="empty">${icon(V.query ? 'search' : 'key')}${V.query ? 'Nada encontrado.' : 'Nenhuma entrada aqui ainda.'}</div>`;
-  ul.querySelectorAll('[data-i]').forEach(b => b.onclick = () => { V.entry = list[+b.dataset.i]; V.editing = false; V.reveal = false; renderList(); renderDetail(); setPane('detail'); });
-  ul.querySelectorAll('[data-sg]').forEach(b => b.onclick = () => { V.group = g.groups.find(c => c.uuid.id === b.dataset.sg); renderGroups(); renderList(); });
+  ul.scrollTop = scroll;
+  ul.querySelectorAll('[data-i]').forEach(b => {
+    const i = +b.dataset.i, e = list[i];
+    b.onclick = (ev) => {
+      if (ev.ctrlKey || ev.metaKey) { V.sel.size === 0 && V.entry && list.includes(V.entry) && V.sel.add(V.entry); V.sel.has(e) ? V.sel.delete(e) : V.sel.add(e); anchorIdx = i; }
+      else if (ev.shiftKey && anchorIdx >= 0) { V.sel.clear(); const [a, z] = [Math.min(anchorIdx, i), Math.max(anchorIdx, i)]; for (let k = a; k <= z; k++) V.sel.add(list[k]); }
+      else { V.sel.clear(); anchorIdx = i; V.entry = e; V.editing = false; V.reveal = false; renderList(); renderDetail(); setPane('detail'); return; }
+      if (V.sel.size === 1) { V.entry = [...V.sel][0]; V.sel.clear(); }
+      renderList(); renderDetail();
+    };
+    b.addEventListener('dragstart', (ev) => startDrag(ev, { groups: [], entries: V.sel.has(e) ? [...V.sel] : [e] }));
+  });
+  ul.querySelectorAll('[data-sg]').forEach(b => {
+    const c = g.groups.find(x => x.uuid.id === b.dataset.sg);
+    b.onclick = () => { V.group = c; V.sel.clear(); rerender(); };
+    b.oncontextmenu = (ev) => { ev.preventDefault(); groupMenu(c, ev.clientX, ev.clientY); };
+    b.addEventListener('dragstart', (ev) => startDrag(ev, { groups: [c], entries: [] }));
+    bindDropTarget(b, () => c);
+  });
   const q = $('#q');
   q.oninput = () => { V.query = q.value; const pos = q.selectionStart; renderList(); const nq = $('#q'); nq.focus(); nq.setSelectionRange(pos, pos); };
   if (searchFocused) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); }
   $('#sort').onclick = () => { S.sort = S.sort === 'mod' ? 'title' : 'mod'; saveS(); renderList(); toast(S.sort === 'mod' ? 'Ordenado por alteração recente' : 'Ordenado por nome', 'layers'); };
-  $('#gAdd') && ($('#gAdd').onclick = async () => { const n = await promptBox('Nova subpasta', 'Nome'); if (!n) return; V.group = db.createGroup(g, n); touch(); renderGroups(); renderList(); });
-  $('#gRen') && ($('#gRen').onclick = async () => { const n = await promptBox('Renomear pasta', 'Nome', g.name); if (!n) return; g.name = n; g.times.update(); touch(); renderGroups(); renderList(); });
-  $('#gDel') && ($('#gDel').onclick = async () => {
-    if (!await confirmBox('Excluir pasta?', `"${g.name}" e tudo que estiver dentro vão para a Lixeira.`, 'Excluir', true)) return;
-    db.remove(g); V.group = null; V.entry = null; touch(); renderGroups(); renderList(); renderDetail();
-  });
-  $('#gEmpty') && ($('#gEmpty').onclick = async () => {
-    if (!await confirmBox('Esvaziar a Lixeira?', 'As entradas serão apagadas de vez. Não dá para desfazer.', 'Esvaziar', true)) return;
-    [...bin.groups].forEach(x => db.move(x, null)); [...bin.entries].forEach(x => db.move(x, null));
-    V.entry = null; touch(); renderGroups(); renderList(); renderDetail();
-  });
+  $('#gAdd') && ($('#gAdd').onclick = () => newGroup(g));
+  $('#gMore') && ($('#gMore').onclick = (ev) => { const r = ev.currentTarget.getBoundingClientRect(); groupMenu(g, r.left, r.bottom + 4); });
+  $('#gEmpty') && ($('#gEmpty').onclick = emptyBin);
+}
+
+// ---------- várias entradas selecionadas ----------
+function renderBulk() {
+  const el = $('#detail'); const items = [...V.sel];
+  el.innerHTML = `<div class="dwrap"><div class="dhead"><span class="avatar" style="background:var(--accent-soft);color:var(--accent-hi);font-family:var(--sans)">${items.length}</span><div><h1>${items.length} entradas selecionadas</h1><div class="path">Ctrl+clique para marcar ou desmarcar · Shift+clique para marcar um intervalo · arraste para uma pasta</div></div></div>
+    <div class="dactions"><button class="btn sm" id="bkMove">${icon('move')} Mover para…</button><button class="btn sm danger" id="bkDel">${icon('trash')} Excluir</button><button class="btn sm ghost" id="bkClr">${icon('x')} Limpar seleção</button></div>
+    <div class="card">${items.slice(0, 200).map(e => `<div class="row" style="min-height:52px">${entryAvatar(e)}<div class="grow"><div style="font-weight:600">${esc(fld(e, 'Title'))}</div><div style="font-size:13px;color:var(--faint)">${esc(fld(e, 'UserName'))} · ${esc(groupPath(e.parentGroup))}</div></div></div>`).join('')}</div></div>`;
+  $('#bkClr').onclick = () => { V.sel.clear(); rerender(); };
+  $('#bkDel').onclick = async () => { if (!await confirmBox(`Excluir ${items.length} entradas?`, 'Elas vão para a Lixeira.', 'Excluir', true)) return; items.forEach(e => db.remove(e)); V.sel.clear(); V.entry = null; touch(); rerender(); toast('Movidas para a Lixeira', 'trash'); };
+  $('#bkMove').onclick = async () => { const g = await pickGroup('Mover para'); if (!g) return; dragItems = { groups: [], entries: items }; doDrop(g); };
+}
+async function pickGroup(title, current) {
+  const opts = allGroups().filter(x => x.g !== binGroup() && !inBin(x.g)).map(x => `<option value="${x.g.uuid.id}" ${x.g === current ? 'selected' : ''}>${'   '.repeat(x.depth)}${esc(x.g.name)}</option>`).join('');
+  const id = await dialog({ title, html: `<div class="input"><select id="mg">${opts}</select></div>`, buttons: [{ label: 'Cancelar', value: null, cls: 'ghost' }, { label: 'OK', cls: 'primary', value: o => $('#mg', o).value }] });
+  return id ? findGroup(id) : null;
+}
+
+// ---------- duplicados ----------
+function hostOf(u) {
+  u = (u || '').trim(); if (!u) return '';
+  try { return new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(u) ? u : 'https://' + u).host.replace(/^www\./, '').toLowerCase(); } catch { return norm(u); }
+}
+const DUP_MODES = {
+  site: { label: 'Mesmo site + usuário', key: e => { const s = hostOf(fld(e, 'URL')) || norm(fld(e, 'Title')).trim(); return s ? s + ' · ' + norm(fld(e, 'UserName')).trim() : ''; } },
+  title: { label: 'Mesmo título + usuário', key: e => { const t = norm(fld(e, 'Title')).trim(); return t ? t + ' · ' + norm(fld(e, 'UserName')).trim() : ''; } },
+  exact: { label: 'Idênticas (usuário + senha + site)', key: e => { const p = fld(e, 'Password'); return p ? [hostOf(fld(e, 'URL')) || norm(fld(e, 'Title')), norm(fld(e, 'UserName')), p].join('\u0001') : ''; } },
+  pass: { label: 'Mesma senha (reuso)', key: e => fld(e, 'Password') },
+};
+function findDups(mode) {
+  const m = new Map();
+  for (const e of db.getDefaultGroup().allEntries()) {
+    if (inBin(e)) continue; const k = DUP_MODES[mode].key(e); if (!k) continue;
+    if (!m.has(k)) m.set(k, []); m.get(k).push(e);
+  }
+  return [...m.values()].filter(a => a.length > 1).map(a => a.sort((x, y) => y.times.lastModTime - x.times.lastModTime)).sort((a, b) => b.length - a.length || fld(a[0], 'Title').localeCompare(fld(b[0], 'Title'), 'pt-BR'));
+}
+function openDuplicates(mode = 'site') {
+  document.querySelectorAll('.cfg').forEach(c => c.remove());
+  const c = document.createElement('div'); c.className = 'cfg';
+  const sel = new Set();
+  c.innerHTML = `<div class="cfg-head">${icon('dup')}<h2>Duplicados</h2><button class="btn sm" id="dClose">Fechar ${icon('x')}</button></div>
+    <div class="tabs">${Object.entries(DUP_MODES).map(([k, v]) => `<button class="tab ${k === mode ? 'on' : ''}" data-m="${k}">${v.label}</button>`).join('')}</div>
+    <div class="cfg-body"><div class="pg" id="dpg"></div></div>
+    <div class="dupbar"><span id="dCount">Nenhuma marcada</span><span style="flex:1"></span><button class="btn sm" id="dupMove">${icon('move')} Mover marcadas</button><button class="btn sm danger" id="dupDel">${icon('trash')} Excluir marcadas</button></div>`;
+  document.body.appendChild(c);
+  const close = () => { c.remove(); popBack(close); rerender(); };
+  pushBack(close); $('#dClose', c).onclick = close;
+  c.querySelectorAll('[data-m]').forEach(b => b.onclick = () => { mode = b.dataset.m; sel.clear(); c.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t === b)); draw(); });
+  const upd = () => { $('#dCount', c).textContent = sel.size ? `${sel.size} marcada(s)` : 'Nenhuma marcada'; };
+  function draw() {
+    const groups = findDups(mode); const pg = $('#dpg', c);
+    const extra = groups.reduce((s, a) => s + a.length - 1, 0);
+    if (!groups.length) { pg.innerHTML = `<div class="empty">${icon('check')}Nenhum duplicado encontrado neste critério.</div>`; upd(); return; }
+    pg.innerHTML = `<div class="dupsum"><div><b>${groups.length}</b> grupo(s) · <b>${extra}</b> entrada(s) a mais</div>
+      ${mode !== 'pass' ? `<button class="btn sm primary" id="dKeepAll">${icon('check')} Manter a mais recente de cada grupo</button>` : `<div class="d" style="color:var(--muted);font-size:14px">Senhas repetidas em lugares diferentes são um risco: se uma vazar, as outras também ficam expostas. Vale trocar.</div>`}</div>`
+      + groups.map((a, gi) => `<div class="card dupg"><div class="duph"><div class="grow"><b>${esc(fld(a[0], 'Title') || '(sem título)')}</b> <span class="cnt">${a.length}×</span><div class="d">${esc(mode === 'pass' ? 'mesma senha' : (fld(a[0], 'UserName') || 'sem usuário') + (hostOf(fld(a[0], 'URL')) ? ' · ' + hostOf(fld(a[0], 'URL')) : ''))}</div></div>
+        ${mode !== 'pass' ? `<button class="btn sm" data-keep="${gi}">Manter a mais recente</button>` : ''}</div>
+        ${a.map((e, ei) => `<label class="duprow"><input type="checkbox" data-gi="${gi}" data-ei="${ei}" ${sel.has(e) ? 'checked' : ''}>${entryAvatar(e)}<div class="grow"><div class="t">${esc(fld(e, 'Title') || '(sem título)')}${ei === 0 ? ' <span class="tag">mais recente</span>' : ''}</div>
+          <div class="d">${esc(fld(e, 'UserName') || '—')} · ${esc(groupPath(e.parentGroup))} · alterada ${fmtDate(e.times.lastModTime)}${fld(e, 'Password') !== fld(a[0], 'Password') ? ' · <b style="color:var(--danger)">senha diferente</b>' : ''}</div></div>
+          <button class="ibtn" data-open="${gi}:${ei}" title="Abrir">${icon('chevron')}</button></label>`).join('')}</div>`).join('');
+    pg.querySelectorAll('[data-gi]').forEach(cb => cb.onchange = () => { const e = groups[+cb.dataset.gi][+cb.dataset.ei]; cb.checked ? sel.add(e) : sel.delete(e); upd(); });
+    pg.querySelectorAll('[data-open]').forEach(b => b.onclick = (ev) => { ev.preventDefault(); const [gi, ei] = b.dataset.open.split(':').map(Number); const e = groups[gi][ei]; close(); V.group = null; V.query = ''; V.sel.clear(); V.entry = e; V.editing = false; rerender(); setPane('detail'); });
+    pg.querySelectorAll('[data-keep]').forEach(b => b.onclick = async () => {
+      const a = groups[+b.dataset.keep]; const rest = a.slice(1);
+      if (!await confirmBox('Manter só a mais recente?', `${rest.length} entrada(s) deste grupo vão para a Lixeira. Dá para restaurar depois.`, 'Confirmar', true)) return;
+      rest.forEach(e => { sel.delete(e); db.remove(e); }); touch(); draw(); toast(`${rest.length} na Lixeira`, 'trash');
+    });
+    $('#dKeepAll', pg) && ($('#dKeepAll', pg).onclick = async () => {
+      if (!await confirmBox('Limpar todos os grupos?', `Fica a entrada mais recente de cada grupo; ${extra} entrada(s) vão para a Lixeira. Confira antes: entradas com "senha diferente" também serão removidas.`, 'Limpar tudo', true)) return;
+      groups.forEach(a => a.slice(1).forEach(e => db.remove(e))); sel.clear(); touch(); draw(); toast(`${extra} na Lixeira`, 'trash');
+    });
+    upd();
+  }
+  $('#dupDel', c).onclick = async () => { if (!sel.size) return toast('Marque as entradas primeiro', 'info'); if (!await confirmBox(`Excluir ${sel.size} entrada(s)?`, 'Elas vão para a Lixeira.', 'Excluir', true)) return; sel.forEach(e => db.remove(e)); const n = sel.size; sel.clear(); touch(); draw(); toast(`${n} na Lixeira`, 'trash'); };
+  $('#dupMove', c).onclick = async () => { if (!sel.size) return toast('Marque as entradas primeiro', 'info'); const g = await pickGroup('Mover marcadas para'); if (!g) return; sel.forEach(e => db.move(e, g)); const n = sel.size; sel.clear(); touch(); draw(); toast(`${n} movida(s) para ${g.name}`, 'move'); };
+  draw();
 }
 
 // ---------- TOTP ----------
@@ -456,6 +711,7 @@ const HIDE = ['otp', 'TimeOtp-Secret-Base32', 'TimeOtp-Length', 'TimeOtp-Period'
 function renderDetail() {
   const el = $('#detail'); if (!el || !db) return; clearInterval(otpTimer);
   if (V.editing) return renderEdit();
+  if (V.sel.size > 1) return renderBulk();
   const e = V.entry;
   if (!e || !e.parentGroup) { V.entry = null; el.innerHTML = `<div class="dempty">${logoHtml()}${wordmark()}<div>Escolha uma entrada para ver os detalhes.</div></div>`; return; }
   const title = fld(e, 'Title'), user = fld(e, 'UserName'), pw = fld(e, 'Password'), url = fld(e, 'URL'), notes = fld(e, 'Notes');
@@ -465,7 +721,7 @@ function renderDetail() {
   const cbtn = (k, t = 'Copiar') => `<button class="ibtn" data-copy="${esc(k)}" title="${t}">${icon('copy')}</button>`;
   el.innerHTML = `<div class="dwrap">
     <button class="btn ghost sm show-m" id="dBack" style="margin:-6px 0 10px -8px">${icon('back')} Voltar</button>
-    <div class="dhead">${avatar(title)}<div style="min-width:0"><h1>${esc(title || '(sem título)')}</h1><div class="path">${icon('folder', 'ic-inline')}${esc(groupPath(e.parentGroup))}</div></div></div>
+    <div class="dhead">${entryAvatar(e)}<div style="min-width:0"><h1>${esc(title || '(sem título)')}</h1><div class="path">${icon('folder', 'ic-inline')}${esc(groupPath(e.parentGroup))}</div></div></div>
     <div class="dactions">
       ${isB ? `<button class="btn sm" id="dRestore">${icon('back')} Restaurar</button><button class="btn sm danger" id="dDel">${icon('trash')} Apagar de vez</button>`
             : `<button class="btn sm primary" id="dEdit">${icon('edit')} Editar</button><button class="btn sm" id="dMove">${icon('move')} Mover</button><button class="btn sm" id="dDup">${icon('copy')} Duplicar</button><button class="btn sm danger" id="dDel">${icon('trash')} Excluir</button>`}
@@ -746,7 +1002,7 @@ function openSettings(tab = 'geral') {
       </div></div>
       <div class="card">${it('Restaurar configurações', 'Volta tema, logomarca e textos ao padrão. Não mexe nos cofres.', `<button class="btn sm danger" id="cReset">Restaurar</button>`)}</div>`;
       $('#cEditAbout', pg).onclick = () => editAbout(() => page('sobre'));
-      $('#cReset', pg).onclick = async () => { if (!await confirmBox('Restaurar configurações?', 'Os seus cofres e senhas não são afetados.', 'Restaurar', true)) return; S = { ...DEF, brand: { ...DEF.brand }, gen: { ...DEF.gen }, bioAsked: S.bioAsked }; saveS(); applyTheme(); reopen('sobre'); };
+      $('#cReset', pg).onclick = async () => { if (!await confirmBox('Restaurar configurações?', 'Os seus cofres e senhas não são afetados.', 'Restaurar', true)) return; S = { ...DEF, brand: { ...DEF.brand }, gen: { ...DEF.gen }, cols: { ...DEF.cols }, bioAsked: S.bioAsked }; saveS(); applyTheme(); reopen('sobre'); };
     }
   }
   function reopen(t) { c.remove(); popBack(close); openSettings(t); }
