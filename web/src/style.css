@@ -287,3 +287,14 @@ body.dragging .gitem{transition:none}
   .dactions{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}.dactions .btn{padding:0 4px;font-size:13px;flex-direction:column;gap:2px;min-height:58px}}
 .ic-inline{display:inline-block;width:15px;height:15px;vertical-align:-2px;margin-right:5px}
 @media (min-width:861px){.show-m{display:none!important}}
+
+.crumbs{display:flex;align-items:center;gap:2px;padding:8px 10px 0 6px;flex-wrap:wrap;flex:0 0 auto;font-size:14px}
+.crumbs .up{width:36px;height:36px;border:1px solid var(--line2);background:var(--surface);margin-right:6px}
+.crumb{border:0;background:none;color:var(--muted);padding:4px 6px;border-radius:8px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.crumb:hover{background:var(--surface2);color:var(--text)}
+.crumb.cur{color:var(--accent-hi);font-weight:700}
+:root[data-theme=light] .crumb.cur{color:var(--accent)}
+.crumbs .sep{color:var(--faint)}
+.treeprev{max-height:180px;overflow:auto;background:var(--bg2);border:1px solid var(--line);border-radius:12px;padding:10px 14px;font-size:15px;line-height:1.8}
+.destlist{max-height:240px;overflow:auto;border:1px solid var(--line);border-radius:12px;padding:6px 12px}
+.destlist .check .ic,.destlist .check .gicon{width:18px;height:18px;display:inline-block}

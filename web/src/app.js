@@ -93,7 +93,7 @@ const promptBox = (title, label, value = '') => dialog({
 const backStack = [];
 function pushBack(fn) { backStack.push(fn); }
 function popBack(fn) { const i = backStack.lastIndexOf(fn); if (i >= 0) backStack.splice(i, 1); }
-window.DVA_back = () => { const fn = backStack.pop(); if (fn) { fn(); return true; } return false; };
+window.DVA_back = () => { const fn = backStack.pop(); if (fn) { fn(); return true; } if (db && V.group && $('#vault')) return goUp(); return false; };
 
 // ================= estado =================
 let file = null;          // arquivo atual
@@ -438,7 +438,7 @@ function isInside(g, ancestor) { while (g) { if (g === ancestor) return true; g 
 function groupMenu(g, x, y) {
   const bin = binGroup(); const isRoot = g === db.getDefaultGroup();
   const items = g === bin ? [['trash', 'Esvaziar Lixeira', () => emptyBin()]]
-    : [['folderPlus', 'Nova subpasta', () => newGroup(g)], ['image', 'Ícone da pasta…', () => chooseGroupIcon(g)], ['edit', 'Renomear', () => renameGroup(g)], ['plus', 'Nova entrada aqui', () => { V.group = g; startEdit(null); }]]
+    : [['folderPlus', 'Nova subpasta', () => newGroup(g)], ['layers', 'Copiar estrutura de subpastas…', () => copyStructureFlow(g)], ['image', 'Ícone da pasta…', () => chooseGroupIcon(g)], ['edit', 'Renomear', () => renameGroup(g)], ['plus', 'Nova entrada aqui', () => { V.group = g; startEdit(null); }]]
       .concat(isRoot ? [] : [['trash', 'Excluir pasta', () => deleteGroup(g), 'danger']]);
   popMenu(items, x, y);
 }
@@ -492,7 +492,44 @@ function doDrop(target) {
 }
 document.addEventListener('dragend', () => { dragItems = null; document.body.classList.remove('dragging'); document.querySelectorAll('.dropover').forEach(x => x.classList.remove('dropover')); });
 
+function crumbPath(g) { const p = []; while (g) { p.unshift(g); g = g.parentGroup; } return p; }
+function goUp() {
+  if (!V.group) return false;
+  const p = V.group.parentGroup; V.group = p || null; V.sel.clear(); V.query = '';
+  if (V.group) V.collapsed.delete(V.group.uuid.id);
+  rerender(); setPane('list'); return true;
+}
 function findGroup(id) { if (!id) return null; return allGroups().map(x => x.g).find(g => g.uuid.id === id) || null; }
+
+// ---------- copiar estrutura de subpastas (sem as entradas) ----------
+function treeOf(g, bin) { return g.groups.filter(c => c !== bin).map(c => ({ name: c.name, icon: c.icon, customIcon: c.customIcon, kids: treeOf(c, bin) })); }
+function countTree(t) { return t.reduce((n, x) => n + 1 + countTree(x.kids), 0); }
+function applyTree(dest, tree) {
+  let made = 0;
+  for (const t of tree) {
+    let c = dest.groups.find(x => norm(x.name).trim() === norm(t.name).trim());
+    if (!c) { c = db.createGroup(dest, t.name); if (t.icon !== undefined) c.icon = t.icon; if (t.customIcon) c.customIcon = t.customIcon; made++; }
+    made += applyTree(c, t.kids);
+  }
+  return made;
+}
+function treeHtml(t, d = 0) { return t.map(x => `<div style="padding-left:${d * 16}px">${customIconUrl(x.customIcon) ? `<img class="gicon" src="${customIconUrl(x.customIcon)}" style="width:16px;height:16px;vertical-align:-3px">` : '📁'} ${esc(x.name)}</div>` + treeHtml(x.kids, d + 1)).join(''); }
+async function copyStructureFlow(src) {
+  const bin = binGroup(); const tree = treeOf(src, bin);
+  if (!tree.length) return toast(`"${src.name}" não tem subpastas para copiar`, 'info');
+  const dests = allGroups().filter(x => x.g !== bin && !inBin(x.g) && !isInside(x.g, src));
+  const ids = await dialog({
+    title: 'Copiar estrutura de subpastas',
+    body: `As ${countTree(tree)} subpasta(s) de "${src.name}" serão criadas nas pastas que você marcar, vazias (sem as entradas). Subpastas que já existirem com o mesmo nome são aproveitadas.`,
+    html: `<div class="treeprev">${treeHtml(tree)}</div><div class="sect">Criar dentro de</div>
+      <div class="destlist">${dests.map(x => `<label class="check" style="padding-left:${x.depth * 16}px"><input type="checkbox" value="${x.g.uuid.id}"> ${groupIcon(x.g)} ${esc(x.g.name)}</label>`).join('')}</div>`,
+    buttons: [{ label: 'Cancelar', value: null, cls: 'ghost' }, { label: 'Copiar estrutura', cls: 'primary', value: o => { const v = [...o.querySelectorAll('.destlist input:checked')].map(i => i.value); if (!v.length) { toast('Marque pelo menos uma pasta', 'info'); return false; } return v; } }],
+  });
+  if (!ids) return;
+  let made = 0; ids.forEach(id => { const d = findGroup(id); if (d) { made += applyTree(d, tree); V.collapsed.delete(d.uuid.id); } });
+  if (made) touch(); rerender();
+  toast(made ? `${made} subpasta(s) criada(s) em ${ids.length} pasta(s)` : 'Essas pastas já tinham essa estrutura', 'layers');
+}
 
 function renderGroups() {
   const el = $('#groups'); if (!el || !db) return;
@@ -559,6 +596,7 @@ function renderList() {
   const oldUl = $('#entries'); const scroll = oldUl ? oldUl.scrollTop : 0;
   el.innerHTML = `
     <div class="searchbar"><div class="input">${icon('search')}<input id="q" type="search" placeholder="Buscar em todo o cofre…" value="${esc(V.query)}" autocomplete="off" spellcheck="false"></div></div>
+    ${g ? `<div class="crumbs"><button class="ibtn up" id="gUp" title="Voltar um nível (Alt+←)">${icon('back')}</button><button class="crumb" data-cg="">Todas</button>${crumbPath(g).map(x => `<span class="sep">›</span><button class="crumb ${x === g ? 'cur' : ''}" data-cg="${x.uuid.id}">${esc(x === bin ? 'Lixeira' : x.name)}</button>`).join('')}</div>` : ''}
     <div class="lhead">${g && !isBin ? `<span class="lhicon">${groupIcon(g)}</span>` : ''}<h2>${esc(title)}</h2>
       ${!isBin ? `<button class="ibtn" id="gAdd" title="Nova pasta${g ? ' aqui dentro' : ''}">${icon('folderPlus')}</button>` : ''}
       ${g && !isBin ? `<button class="ibtn" id="gMore" title="Opções da pasta">${icon('more')}</button>` : ''}
@@ -595,6 +633,8 @@ function renderList() {
   q.oninput = () => { V.query = q.value; const pos = q.selectionStart; renderList(); const nq = $('#q'); nq.focus(); nq.setSelectionRange(pos, pos); };
   if (searchFocused) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); }
   $('#sort').onclick = () => { S.sort = S.sort === 'mod' ? 'title' : 'mod'; saveS(); renderList(); toast(S.sort === 'mod' ? 'Ordenado por alteração recente' : 'Ordenado por nome', 'layers'); };
+  $('#gUp') && ($('#gUp').onclick = goUp);
+  el.querySelectorAll('[data-cg]').forEach(b => b.onclick = () => { V.group = b.dataset.cg ? (findGroup(b.dataset.cg) || (bin && bin.uuid.id === b.dataset.cg ? bin : null)) : null; V.sel.clear(); V.query = ''; rerender(); });
   $('#gAdd') && ($('#gAdd').onclick = () => newGroup(g));
   $('#gMore') && ($('#gMore').onclick = (ev) => { const r = ev.currentTarget.getBoundingClientRect(); groupMenu(g, r.left, r.bottom + 4); });
   $('#gEmpty') && ($('#gEmpty').onclick = emptyBin);
@@ -724,7 +764,7 @@ function renderDetail() {
     <div class="dhead">${entryAvatar(e)}<div style="min-width:0"><h1>${esc(title || '(sem título)')}</h1><div class="path">${icon('folder', 'ic-inline')}${esc(groupPath(e.parentGroup))}</div></div></div>
     <div class="dactions">
       ${isB ? `<button class="btn sm" id="dRestore">${icon('back')} Restaurar</button><button class="btn sm danger" id="dDel">${icon('trash')} Apagar de vez</button>`
-            : `<button class="btn sm primary" id="dEdit">${icon('edit')} Editar</button><button class="btn sm" id="dMove">${icon('move')} Mover</button><button class="btn sm" id="dDup">${icon('copy')} Duplicar</button><button class="btn sm danger" id="dDel">${icon('trash')} Excluir</button>`}
+            : `<button class="btn sm primary" id="dEdit">${icon('edit')} Editar</button><button class="btn sm" id="dMove">${icon('move')} Mover</button><button class="btn sm" id="dDup" title="Cria outra entrada igual a esta, para aproveitar os dados (ex.: mesmo usuário em outro sistema)">${icon('copy')} Fazer cópia</button><button class="btn sm danger" id="dDel">${icon('trash')} Excluir</button>`}
     </div>
     <div class="card">
       ${row('Usuário', user ? esc(user) : '<span style="color:var(--faint)">—</span>', user ? cbtn('UserName') : '')}
@@ -914,12 +954,14 @@ function openSettings(tab = 'geral') {
     if (t === 'geral') {
       pg.innerHTML = `<div class="card">
         ${it('Cofre aberto', db ? esc(file.name) : 'nenhum', db ? `<button class="btn sm" id="cSave">${icon('save')} Salvar agora</button>` : '')}
+        ${it('Senha mestra', db ? 'A senha que abre este cofre' : 'Abra um cofre para poder trocar a senha mestra', db ? `<button class="btn sm primary" id="cPw2">${icon('key')} Trocar senha mestra</button>` : '')}
         ${it('Ordem das entradas', '', sel('cSort', S.sort, [['title', 'Por nome'], ['mod', 'Alteração recente']]))}
         ${it('Gerador de senhas', `Padrão: ${S.gen.len} caracteres`, `<button class="btn sm" id="cGen">${icon('dice')} Abrir</button>`)}
         ${db ? it('Nome do cofre', esc(db.meta.name || ''), `<button class="btn sm" id="cName">${icon('edit')} Alterar</button>`) : ''}
         ${db ? it('Lixeira', 'Entradas excluídas vão para a Lixeira antes de sumir', sw('cBin', db.meta.recycleBinEnabled !== false)) : ''}
         ${db ? it('Cópia de segurança', 'Baixa uma cópia do .kdbx com a data de hoje', `<button class="btn sm" id="cBak">${icon('download')} Baixar</button>`) : ''}
       </div>`;
+      $('#cPw2', pg) && ($('#cPw2', pg).onclick = changeMaster);
       $('#cSort', pg).onchange = (e) => { S.sort = e.target.value; saveS(); };
       $('#cGen', pg).onclick = () => openGenerator();
       $('#cSave', pg) && ($('#cSave', pg).onclick = async () => { await save(); toast('Salvo'); });
@@ -934,7 +976,7 @@ function openSettings(tab = 'geral') {
         ${it('Bloquear ao sair do app', 'Fecha o cofre quando você troca de app ou de aba', sw('cLeave', S.lockOnLeave))}
         ${it('Apagar área de transferência', 'Tempo até apagar a senha copiada', sel('cClip', S.clip, [[10, '10 s'], [20, '20 s'], [30, '30 s'], [60, '1 min'], [120, '2 min'], [0, 'Não apagar']]))}
         ${isAndroid ? it('Digital neste cofre', bs === 'ok' ? (db ? 'Abrir com a impressão digital' : 'Abra um cofre para configurar') : 'Nenhuma digital cadastrada no aparelho', db && bs === 'ok' ? sw('cBio', platform.bio.has(file.id)) : '') : ''}
-        ${db ? it('Senha mestra', 'Troca a senha que abre este cofre', `<button class="btn sm" id="cPw">${icon('key')} Trocar</button>`) : ''}
+        ${it('Senha mestra', db ? 'Troca a senha que abre este cofre' : 'Abra um cofre para poder trocar a senha mestra', db ? `<button class="btn sm primary" id="cPw">${icon('key')} Trocar senha mestra</button>` : '')}
       </div>`;
       $('#cAuto', pg).onchange = (e) => { S.autolock = +e.target.value; saveS(); };
       $('#cLeave', pg).onchange = (e) => { S.lockOnLeave = e.target.checked; saveS(); };
@@ -948,16 +990,7 @@ function openSettings(tab = 'geral') {
         if (a.length !== bb.length || a.some((x, i) => x !== bb[i])) { toast('Senha mestra incorreta', 'info'); e.target.checked = false; return; }
         await enableBio(p); page('seg');
       });
-      $('#cPw', pg) && ($('#cPw', pg).onclick = async () => {
-        const r = await dialog({ title: 'Trocar senha mestra', body: 'O arquivo continuará compatível com o KeePass. Nos outros aparelhos, use a nova senha.',
-          html: `<div class="field"><label>Nova senha mestra</label><div class="input"><input id="n1" type="password" class="mono"></div></div><div class="field"><label>Repita</label><div class="input"><input id="n2" type="password" class="mono"></div></div><div class="err" id="ne"></div>`,
-          buttons: [{ label: 'Cancelar', value: null, cls: 'ghost' }, { label: 'Trocar', cls: 'primary', value: o => { const a = $('#n1', o).value, b = $('#n2', o).value; if (a.length < 8) { $('#ne', o).textContent = 'Mínimo de 8 caracteres.'; return false; } if (a !== b) { $('#ne', o).textContent = 'As senhas não conferem.'; return false; } return a; } }] });
-        if (!r) return;
-        await db.credentials.setPassword(PV.fromString(r)); db.meta.keyChanged = new Date();
-        await save(); loadedHash = null;
-        if (platform.bio.has(file.id)) { platform.bio.remove(file.id); await enableBio(r); }
-        toast('Senha mestra trocada', 'key');
-      });
+      $('#cPw', pg) && ($('#cPw', pg).onclick = changeMaster);
     }
     if (t === 'apar') {
       pg.innerHTML = `<div class="card">
@@ -1008,6 +1041,23 @@ function openSettings(tab = 'geral') {
   function reopen(t) { c.remove(); popBack(close); openSettings(t); }
   page(tab);
 }
+let lastCur = '';
+async function checkMaster(p) {
+  const t = new kdbxweb.Credentials(PV.fromString(p)); await t.ready;
+  const a = t.passwordHash.getBinary(), b = db.credentials.passwordHash.getBinary();
+  return a.length === b.length && a.every((x, i) => x === b[i]);
+}
+async function changeMaster() {
+        const r = await dialog({ title: 'Trocar senha mestra', body: 'O arquivo continuará compatível com o KeePass. Nos outros aparelhos, use a nova senha.',
+          html: `${db.credentials.passwordHash ? `<div class="field"><label>Senha mestra atual</label><div class="input"><input id="n0" type="password" class="mono"></div></div>` : ''}<div class="field"><label>Nova senha mestra</label><div class="input"><input id="n1" type="password" class="mono"></div></div><div class="field"><label>Repita</label><div class="input"><input id="n2" type="password" class="mono"></div></div><div class="err" id="ne"></div>`,
+          buttons: [{ label: 'Cancelar', value: null, cls: 'ghost' }, { label: 'Trocar', cls: 'primary', value: o => { const a = $('#n1', o).value, b = $('#n2', o).value; if ($('#n0', o)) lastCur = $('#n0', o).value; if (a.length < 8) { $('#ne', o).textContent = 'Mínimo de 8 caracteres.'; return false; } if (a !== b) { $('#ne', o).textContent = 'As senhas não conferem.'; return false; } return a; } }] });
+        if (!r) return;
+        if (db.credentials.passwordHash && !(await checkMaster(lastCur))) { toast('Senha mestra atual incorreta', 'info'); return; }
+        await db.credentials.setPassword(PV.fromString(r)); db.meta.keyChanged = new Date();
+        await save();
+        if (platform.bio.has(file.id)) { platform.bio.remove(file.id); await enableBio(r); }
+        toast('Senha mestra trocada', 'key');
+}
 function pickLogo(done) {
   const i = document.createElement('input'); i.type = 'file'; i.accept = 'image/*';
   i.onchange = () => {
@@ -1052,6 +1102,7 @@ document.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'l') { e.preventDefault(); lock(); }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); save(); }
   if (e.key === 'Escape' && V.editing) { V.editing = false; renderDetail(); }
+  if ((e.altKey && e.key === 'ArrowLeft') || (e.key === 'Backspace' && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName))) { if (!V.editing && goUp()) e.preventDefault(); }
 });
 window.addEventListener('beforeunload', (e) => { if (saveState === 'dirty' || saveState === 'busy') { e.preventDefault(); e.returnValue = ''; } });
 renderHome();
