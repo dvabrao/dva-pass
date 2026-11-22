@@ -17,7 +17,7 @@ kdbxweb.CryptoEngine.setArgon2Impl(async (password, salt, memory, iterations, le
 
 // ================= configurações =================
 const DEF = {
-  theme: 'dark', autolock: 5, lockOnLeave: false, clip: 30, showUser: true, sort: 'title',
+  theme: 'dark', gsort: 'name', autolock: 5, lockOnLeave: false, clip: 30, showUser: true, sort: 'title',
   gen: { len: 20, upper: true, lower: true, digits: true, symbols: true, noAmb: true },
   brand: { name: 'DVA_Pass', logo: null, credit: 'Daniel Vale Abrão', contact: 'dvabrao@gmail.com', place: 'Ribeirão Preto · SP · 2026', tagline: 'Seu cofre de senhas, compatível com KeePass' },
   bioAsked: {}, cols: { g: 260, l: 400 },
@@ -291,8 +291,14 @@ async function save() {
 }
 
 // ================= cofre =================
+const byName = (a, b) => (a || '').localeCompare(b || '', 'pt-BR', { sensitivity: 'base', numeric: true });
+function kids(g) { const l = g.groups.slice(); return S.gsort === 'file' ? l : l.sort((a, b) => (a === binGroup()) - (b === binGroup()) || byName(a.name, b.name)); }
 function allGroups(g = db.getDefaultGroup(), depth = 0, out = []) {
-  out.push({ g, depth }); g.groups.forEach(c => allGroups(c, depth + 1, out)); return out;
+  out.push({ g, depth }); kids(g).forEach(c => allGroups(c, depth + 1, out)); return out;
+}
+function sortGroupsInFile(g, deep) {
+  const bin = binGroup(); g.groups.sort((a, b) => (a === bin) - (b === bin) || byName(a.name, b.name));
+  if (deep) g.groups.forEach(c => sortGroupsInFile(c, true));
 }
 function binGroup() { return db.meta.recycleBinUuid ? db.getGroup(db.meta.recycleBinUuid) : null; }
 function inBin(item) { const b = binGroup(); if (!b) return false; let g = item.parentGroup; while (g) { if (g === b) return true; g = g.parentGroup; } return false; }
@@ -439,7 +445,7 @@ function isInside(g, ancestor) { while (g) { if (g === ancestor) return true; g 
 function groupMenu(g, x, y) {
   const bin = binGroup(); const isRoot = g === db.getDefaultGroup();
   const items = g === bin ? [['trash', 'Esvaziar Lixeira', () => emptyBin()]]
-    : [['folderPlus', 'Nova subpasta', () => newGroup(g)], ['layers', 'Copiar estrutura de subpastas…', () => copyStructureFlow(g)], ['dup', 'Achar duplicados nesta pasta', () => openDuplicates('site', g === db.getDefaultGroup() ? null : g)], ['image', 'Ícone da pasta…', () => chooseGroupIcon(g)], ['edit', 'Renomear', () => renameGroup(g)], ['plus', 'Nova entrada aqui', () => { V.group = g; startEdit(null); }]]
+    : [['folderPlus', 'Nova subpasta', () => newGroup(g)], ['layers', 'Copiar estrutura de subpastas…', () => copyStructureFlow(g)], ['sortAz', 'Ordenar subpastas A–Z no arquivo', () => { sortGroupsInFile(g, true); touch(); rerender(); toast('Subpastas ordenadas', 'sortAz'); }], ['dup', 'Achar duplicados nesta pasta', () => openDuplicates('site', g === db.getDefaultGroup() ? null : g)], ['image', 'Ícone da pasta…', () => chooseGroupIcon(g)], ['edit', 'Renomear', () => renameGroup(g)], ['plus', 'Nova entrada aqui', () => { V.group = g; startEdit(null); }]]
       .concat(isRoot ? [] : [['trash', 'Excluir pasta', () => deleteGroup(g), 'danger']]);
   popMenu(items, x, y);
 }
@@ -545,7 +551,7 @@ function renderGroups() {
     const has = g.groups.some(c => c !== bin); const col = V.collapsed.has(g.uuid.id);
     h += `<button class="gitem ${V.group === g ? 'sel' : ''}" data-g="${g.uuid.id}" ${g !== root ? 'draggable="true"' : ''} style="padding-left:${10 + d * 16}px">
       ${has ? `<span class="tw" data-tw="${g.uuid.id}">${icon(col ? 'chevron' : 'down')}</span>` : `<span class="tw"></span>`}${groupIcon(g)}<span class="gn">${esc(g.name)}</span><span class="cnt">${g.entries.length || ''}</span></button>`;
-    if (!col) g.groups.forEach(c => walk(c, d + 1));
+    if (!col) kids(g).forEach(c => walk(c, d + 1));
   };
   walk(root, 0);
   if (bin) h += `<div class="gsec">Lixeira</div><button class="gitem ${V.group === bin ? 'sel' : ''}" data-g="${bin.uuid.id}">${icon('bin')}<span class="gn">Lixeira</span><span class="cnt">${count(bin) || ''}</span></button>`;
@@ -581,7 +587,7 @@ function visibleEntries() {
       return terms.every(t => hay.includes(t));
     });
   }
-  return src.sort((a, b) => S.sort === 'mod' ? (b.times.lastModTime - a.times.lastModTime) : fld(a, 'Title').localeCompare(fld(b, 'Title'), 'pt-BR', { sensitivity: 'base' }));
+  return src.sort((a, b) => S.sort === 'mod' ? (b.times.lastModTime - a.times.lastModTime) : (!fld(a, 'Title') - !fld(b, 'Title')) || byName(fld(a, 'Title'), fld(b, 'Title')));
 }
 function entryAvatar(e) {
   const u = customIconUrl(e.customIcon);
@@ -608,7 +614,7 @@ function renderList() {
     <ul class="entries" id="entries"></ul>`;
   const ul = $('#entries'); const list = visibleEntries(); lastList = list;
   for (const e of [...V.sel]) if (!list.includes(e)) V.sel.delete(e);
-  const subs = (!V.query && g) ? g.groups.filter(c => c !== bin) : [];
+  const subs = (!V.query && g) ? kids(g).filter(c => c !== bin) : [];
   ul.innerHTML = subs.map(c => `<li><button class="eitem" data-sg="${c.uuid.id}" draggable="true"><span class="avatar" style="background:var(--surface2);color:var(--accent-hi)">${groupIcon(c)}</span><span class="meta"><div class="t">${esc(c.name)}</div><div class="u">${c.entries.length} entrada(s)${c.groups.length ? ` · ${c.groups.length} pasta(s)` : ''}</div></span>${icon('chevron')}</button></li>`).join('')
     + list.map((e, i) => `<li><button class="eitem ${V.sel.has(e) ? 'msel' : ''} ${V.entry === e && V.sel.size < 2 ? 'sel' : ''}" data-i="${i}" draggable="true">${entryAvatar(e)}<span class="meta"><div class="t">${esc(fld(e, 'Title') || '(sem título)')}</div>${S.showUser ? `<div class="u">${esc(fld(e, 'UserName') || fld(e, 'URL') || ' ')}</div>` : ''}${(V.query || !g) && e.parentGroup ? `<div class="g">${esc(groupPath(e.parentGroup))}</div>` : ''}</span></button></li>`).join('');
   if (!list.length && !subs.length) ul.innerHTML = `<div class="empty">${icon(V.query ? 'search' : 'key')}${V.query ? 'Nada encontrado.' : 'Nenhuma entrada aqui ainda.'}</div>`;
@@ -1198,7 +1204,9 @@ function openSettings(tab = 'geral') {
       pg.innerHTML = `<div class="card">
         ${it('Cofre aberto', db ? esc(file.name) : 'nenhum', db ? `<button class="btn sm" id="cSave">${icon('save')} Salvar agora</button>` : '')}
         ${it('Senha mestra', db ? 'A senha que abre este cofre' : 'Abra um cofre para poder trocar a senha mestra', db ? `<button class="btn sm primary" id="cPw2">${icon('key')} Trocar senha mestra</button>` : '')}
-        ${it('Ordem das entradas', '', sel('cSort', S.sort, [['title', 'Por nome'], ['mod', 'Alteração recente']]))}
+        ${it('Ordem das entradas', '', sel('cSort', S.sort, [['title', 'Por nome (A–Z)'], ['mod', 'Alteração recente']]))}
+        ${it('Ordem das pastas', 'Por nome, ou na ordem gravada no arquivo (a mesma do KeePass)', sel('cGsort', S.gsort, [['name', 'Por nome (A–Z)'], ['file', 'Como no arquivo']]))}
+        ${db ? it('Ordenar pastas no arquivo', 'Grava todas as pastas em ordem alfabética no .kdbx, para aparecerem assim também no KeePass', `<button class="btn sm" id="cSortFile">${icon('sortAz')} Ordenar</button>`) : ''}
         ${it('Gerador de senhas', `Padrão: ${S.gen.len} caracteres`, `<button class="btn sm" id="cGen">${icon('dice')} Abrir</button>`)}
         ${db ? it('Nome do cofre', esc(db.meta.name || ''), `<button class="btn sm" id="cName">${icon('edit')} Alterar</button>`) : ''}
         ${db ? it('Lixeira', 'Entradas excluídas vão para a Lixeira antes de sumir', sw('cBin', db.meta.recycleBinEnabled !== false)) : ''}
@@ -1206,6 +1214,8 @@ function openSettings(tab = 'geral') {
       </div>`;
       $('#cPw2', pg) && ($('#cPw2', pg).onclick = changeMaster);
       $('#cSort', pg).onchange = (e) => { S.sort = e.target.value; saveS(); };
+      $('#cGsort', pg).onchange = (e) => { S.gsort = e.target.value; saveS(); };
+      $('#cSortFile', pg) && ($('#cSortFile', pg).onclick = async () => { if (!await confirmBox('Ordenar pastas no arquivo?', 'Todas as pastas e subpastas ficam em ordem alfabética também no KeePass2 e no Keepass2Android. As entradas não mudam.', 'Ordenar')) return; sortGroupsInFile(db.getDefaultGroup(), true); touch(); toast('Pastas ordenadas no arquivo', 'sortAz'); });
       $('#cGen', pg).onclick = () => openGenerator();
       $('#cSave', pg) && ($('#cSave', pg).onclick = async () => { await save(); toast('Salvo'); });
       $('#cName', pg) && ($('#cName', pg).onclick = async () => { const n = await promptBox('Nome do cofre', 'Nome', db.meta.name); if (n) { db.meta.name = n; db.meta.nameChanged = new Date(); touch(); page('geral'); } });
