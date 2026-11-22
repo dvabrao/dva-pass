@@ -61,7 +61,7 @@ function toast(msg, ic = 'check') {
 async function sha(bytes) { return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))).map(b => b.toString(16).padStart(2, '0')).join(''); }
 function copy(text, what) {
   if (!text) return;
-  platform.copy(text, S.clip).then(() => toast(S.clip > 0 ? `${what} copiado · apaga em ${S.clip} s` : `${what} copiado`, 'copy'));
+  platform.copy(text, S.clip).then(() => toast(S.clip > 0 ? `Copiado: ${what} · apaga em ${S.clip} s` : `Copiado: ${what}`, 'copy'));
 }
 
 // ================= diálogos =================
@@ -221,6 +221,7 @@ async function enableBio(password) {
 }
 
 function lock() {
+  closeChildTabs();
   if (!file) return renderHome();
   document.querySelectorAll('.overlay,.cfg').forEach(o => o.remove());
   db = null; renderUnlock(file);
@@ -703,13 +704,51 @@ function entryPopup(e, onOpenVault) {
 function openSite(url) { let u = url.trim(); if (!/^[a-z]+:\/\//i.test(u)) u = 'https://' + u; platform.openUrl(u); }
 function openInVault(e) { V.group = null; V.query = ''; V.sel.clear(); V.selMode = false; V.entry = e; V.editing = false; V.reveal = false; rerender(); setPane('detail'); }
 
+// ---------- abrir a entrada numa nova guia do navegador (PC) ----------
+const childTabs = new Set();
+function closeChildTabs() { childTabs.forEach(w => { try { w.close(); } catch {} }); childTabs.clear(); }
+window.addEventListener('pagehide', closeChildTabs);
+function openEntryTab(e) {
+  const w = window.open('', '_blank');
+  if (!w) return toast('O navegador bloqueou a nova guia. Permita pop-ups para este arquivo.', 'info');
+  childTabs.add(w);
+  const title = fld(e, 'Title'), url = fld(e, 'URL'), notes = fld(e, 'Notes');
+  const keys = ['UserName', 'Password', 'URL', ...[...e.fields.keys()].filter(k => !STD.includes(k) && !HIDE.includes(k))];
+  const label = { UserName: 'Usuário', Password: 'Senha', URL: 'Endereço' };
+  const rows = keys.map(k => { const v = fld(e, k); const prot = k === 'Password' || e.fields.get(k) instanceof PV;
+    return `<div class="row"><div class="grow"><div class="lbl">${esc(label[k] || k)}</div><div class="val" data-v="${esc(k)}">${!v ? '<span style="color:var(--faint)">—</span>' : prot ? '<span class="masked">••••••••</span>' : k === 'URL' ? `<a href="#" data-site>${esc(v)}</a>` : esc(v)}</div></div>${v && prot ? `<button class="ibtn" data-eye="${esc(k)}" title="Mostrar">${icon('eye')}</button>` : ''}${v && k === 'URL' ? `<button class="ibtn" data-site title="Abrir site">${icon('link')}</button>` : ''}${v ? `<button class="ibtn" data-cp="${esc(k)}" title="Copiar">${icon('copy')}</button>` : ''}</div>`; }).join('');
+  const css = [...document.querySelectorAll('style')].map(x => x.textContent).join('\n');
+  w.document.open();
+  w.document.write(`<!DOCTYPE html><html lang="pt-BR" data-theme="${esc(S.theme)}"><head><meta charset="utf-8"><title>${esc(title || 'Entrada')} · ${esc(S.brand.name)}</title><style>${css}</style></head>
+    <body style="overflow:auto"><div class="dwrap" style="max-width:820px">
+      <div class="brand" style="margin-bottom:22px">${logoHtml()}${wordmark()}<span class="dbname" style="color:var(--faint);font-size:13px">· ${esc(file.name)} · somente visualização</span></div>
+      <div class="dhead">${entryAvatar(e)}<div style="min-width:0"><h1>${esc(title || '(sem título)')}</h1><div class="path">${esc(groupPath(e.parentGroup))}</div></div></div>
+      <div class="dactions"><button class="btn sm primary" id="tEdit">${icon('edit')} Editar no ${esc(S.brand.name)}</button><button class="btn sm" id="tClose">${icon('x')} Fechar guia</button></div>
+      <div class="card">${rows}</div>
+      ${notes ? `<div class="sect">Notas</div><div class="card"><div class="notes">${esc(notes)}</div></div>` : ''}
+      <div class="times">Criada em ${fmtDate(e.times.creationTime)} · Alterada em ${fmtDate(e.times.lastModTime)}<br>Esta guia fecha sozinha quando o cofre é bloqueado. Para ver alterações feitas depois, abra de novo.</div>
+    </div></body></html>`);
+  w.document.close();
+  const d = w.document;
+  const tt = (msg) => { d.querySelectorAll('.toast').forEach(t => t.remove()); const t = d.createElement('div'); t.className = 'toast'; t.innerHTML = icon('copy') + `<span>${esc(msg)}</span>`; d.body.appendChild(t); setTimeout(() => t.remove(), 2400); };
+  d.querySelectorAll('[data-cp]').forEach(b => b.onclick = () => {
+    const v = fld(e, b.dataset.cp); w.navigator.clipboard.writeText(v).then(() => tt(`Copiado: ${label[b.dataset.cp] || b.dataset.cp}${S.clip ? ` · apaga em ${S.clip} s` : ''}`));
+    if (S.clip) setTimeout(() => { try { w.navigator.clipboard.writeText(''); } catch {} }, S.clip * 1000);
+  });
+  d.querySelectorAll('[data-eye]').forEach(b => b.onclick = () => { const v = d.querySelector(`[data-v="${CSS.escape(b.dataset.eye)}"]`); const hid = !!v.querySelector('.masked'); v.innerHTML = hid ? pwHtml(fld(e, b.dataset.eye)) : '<span class="masked">••••••••</span>'; b.innerHTML = icon(hid ? 'eyeOff' : 'eye'); });
+  d.querySelectorAll('[data-site]').forEach(b => b.onclick = (ev) => { ev.preventDefault(); let u = url.trim(); if (!/^[a-z]+:\/\//i.test(u)) u = 'https://' + u; w.open(u, '_blank', 'noopener'); });
+  d.getElementById('tClose').onclick = () => w.close();
+  d.getElementById('tEdit').onclick = () => { if (!db) return tt('O cofre está bloqueado'); window.focus(); document.querySelectorAll('.cfg,.overlay').forEach(c => c.remove()); openInVault(e); startEdit(e); };
+}
+
 // menu do botão direito numa entrada
 function entryMenu(e, x, y, extra = []) {
   const url = fld(e, 'URL');
   popMenu([
     ...extra,
+    ...(!isAndroid ? [['tab', 'Abrir em nova guia', () => openEntryTab(e)]] : []),
     ['eye', 'Ver em janela', () => entryPopup(e, () => { document.querySelectorAll('.cfg').forEach(c => c.remove()); openInVault(e); })],
-    ...(url ? [['link', 'Abrir o site em nova guia', () => openSite(url)]] : []),
+    ...(url ? [['link', 'Abrir o site (endereço)', () => openSite(url)]] : []),
     ['copy', 'Copiar usuário', () => copy(fld(e, 'UserName'), 'Usuário')],
     ['key', 'Copiar senha', () => copy(fld(e, 'Password'), 'Senha')],
   ], x, y);

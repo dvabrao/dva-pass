@@ -37,6 +37,7 @@ const P = {
   more: '<circle cx="12" cy="5.5" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="12" cy="18.5" r="1.3" fill="currentColor"/>',
   sortAz: '<path d="M4 7h9M4 12h6M4 17h3"/><path d="M17 5v14M14 16l3 3 3-3"/>',
   merge: '<path d="M6 4v4a4 4 0 0 0 4 4h4a4 4 0 0 1 4 4v4"/><path d="M18 4v4a4 4 0 0 1-4 4"/><path d="m15 17 3 3 3-3"/>',
+  tab: '<rect x="3.5" y="5" width="17" height="14" rx="2.5"/><path d="M3.5 9.5h17M7 7.2h.01M9.5 7.2h.01"/><path d="M12 13v3.5M10.2 14.8h3.6"/>',
   save: '<path d="M5 3.5h11l3.5 3.5v11A2 2 0 0 1 17.5 20h-11a2 2 0 0 1-2-2V5.5a2 2 0 0 1 .5-2z"/><path d="M8 3.5V8h7V3.5M8 20v-6h8v6"/>',
 };
 export function icon(name, cls = '') {

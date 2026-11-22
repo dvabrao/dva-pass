@@ -5,8 +5,10 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
+# O APK só é gerado quando a mensagem do envio tem [apk] ou pelo botão "Run workflow" em Actions.
 jobs:
   build:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[apk]')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
