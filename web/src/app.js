@@ -259,7 +259,7 @@ async function newDbFlow() {
 
 // ================= gravação (com mesclagem se o arquivo mudou em outro aparelho) =================
 function setStatus(s) {
-  saveState = s; const el = $('#status'); if (!el) return;
+  saveState = s; tabRefreshers.forEach(f => f()); const el = $('#status'); if (!el) return;
   el.className = 'status ' + s;
   el.innerHTML = '<span class="dot"></span><span class="stx">' + ({ ok: 'Salvo', busy: 'Salvando…', err: 'Erro ao salvar — toque', dirty: 'Alterado' }[s]) + '</span>';
 }
@@ -439,7 +439,7 @@ function isInside(g, ancestor) { while (g) { if (g === ancestor) return true; g 
 function groupMenu(g, x, y) {
   const bin = binGroup(); const isRoot = g === db.getDefaultGroup();
   const items = g === bin ? [['trash', 'Esvaziar Lixeira', () => emptyBin()]]
-    : [['folderPlus', 'Nova subpasta', () => newGroup(g)], ['layers', 'Copiar estrutura de subpastas…', () => copyStructureFlow(g)], ['image', 'Ícone da pasta…', () => chooseGroupIcon(g)], ['edit', 'Renomear', () => renameGroup(g)], ['plus', 'Nova entrada aqui', () => { V.group = g; startEdit(null); }]]
+    : [['folderPlus', 'Nova subpasta', () => newGroup(g)], ['layers', 'Copiar estrutura de subpastas…', () => copyStructureFlow(g)], ['dup', 'Achar duplicados nesta pasta', () => openDuplicates('site', g === db.getDefaultGroup() ? null : g)], ['image', 'Ícone da pasta…', () => chooseGroupIcon(g)], ['edit', 'Renomear', () => renameGroup(g)], ['plus', 'Nova entrada aqui', () => { V.group = g; startEdit(null); }]]
       .concat(isRoot ? [] : [['trash', 'Excluir pasta', () => deleteGroup(g), 'danger']]);
   popMenu(items, x, y);
 }
@@ -618,6 +618,8 @@ function renderList() {
     let lp, lpFired = false;
     b.addEventListener('touchstart', () => { lpFired = false; lp = setTimeout(() => { lpFired = true; V.selMode = true; V.sel.add(e); if (navigator.vibrate) navigator.vibrate(30); renderList(); }, 500); }, { passive: true });
     ['touchend', 'touchmove', 'touchcancel'].forEach(x => b.addEventListener(x, () => clearTimeout(lp), { passive: true }));
+    b.addEventListener('auxclick', (ev) => { if (ev.button === 1 && !isAndroid) { ev.preventDefault(); openEntryTab(e); } });
+    b.addEventListener('mousedown', (ev) => { if (ev.button === 1) ev.preventDefault(); });
     b.oncontextmenu = (ev) => {
       ev.preventDefault(); if (V.selMode || lpFired) return;
       entryMenu(e, ev.clientX, ev.clientY, inBin(e) ? [] : [
@@ -706,40 +708,86 @@ function openInVault(e) { V.group = null; V.query = ''; V.sel.clear(); V.selMode
 
 // ---------- abrir a entrada numa nova guia do navegador (PC) ----------
 const childTabs = new Set();
-function closeChildTabs() { childTabs.forEach(w => { try { w.close(); } catch {} }); childTabs.clear(); }
+function closeChildTabs() { childTabs.forEach(w => { try { w.close(); } catch {} }); childTabs.clear(); tabRefreshers.clear(); }
 window.addEventListener('pagehide', closeChildTabs);
 function openEntryTab(e) {
   const w = window.open('', '_blank');
   if (!w) return toast('O navegador bloqueou a nova guia. Permita pop-ups para este arquivo.', 'info');
   childTabs.add(w);
-  const title = fld(e, 'Title'), url = fld(e, 'URL'), notes = fld(e, 'Notes');
-  const keys = ['UserName', 'Password', 'URL', ...[...e.fields.keys()].filter(k => !STD.includes(k) && !HIDE.includes(k))];
-  const label = { UserName: 'Usuário', Password: 'Senha', URL: 'Endereço' };
-  const rows = keys.map(k => { const v = fld(e, k); const prot = k === 'Password' || e.fields.get(k) instanceof PV;
-    return `<div class="row"><div class="grow"><div class="lbl">${esc(label[k] || k)}</div><div class="val" data-v="${esc(k)}">${!v ? '<span style="color:var(--faint)">—</span>' : prot ? '<span class="masked">••••••••</span>' : k === 'URL' ? `<a href="#" data-site>${esc(v)}</a>` : esc(v)}</div></div>${v && prot ? `<button class="ibtn" data-eye="${esc(k)}" title="Mostrar">${icon('eye')}</button>` : ''}${v && k === 'URL' ? `<button class="ibtn" data-site title="Abrir site">${icon('link')}</button>` : ''}${v ? `<button class="ibtn" data-cp="${esc(k)}" title="Copiar">${icon('copy')}</button>` : ''}</div>`; }).join('');
   const css = [...document.querySelectorAll('style')].map(x => x.textContent).join('\n');
   w.document.open();
-  w.document.write(`<!DOCTYPE html><html lang="pt-BR" data-theme="${esc(S.theme)}"><head><meta charset="utf-8"><title>${esc(title || 'Entrada')} · ${esc(S.brand.name)}</title><style>${css}</style></head>
-    <body style="overflow:auto"><div class="dwrap" style="max-width:820px">
-      <div class="brand" style="margin-bottom:22px">${logoHtml()}${wordmark()}<span class="dbname" style="color:var(--faint);font-size:13px">· ${esc(file.name)} · somente visualização</span></div>
-      <div class="dhead">${entryAvatar(e)}<div style="min-width:0"><h1>${esc(title || '(sem título)')}</h1><div class="path">${esc(groupPath(e.parentGroup))}</div></div></div>
-      <div class="dactions"><button class="btn sm primary" id="tEdit">${icon('edit')} Editar no ${esc(S.brand.name)}</button><button class="btn sm" id="tClose">${icon('x')} Fechar guia</button></div>
+  w.document.write(`<!DOCTYPE html><html lang="pt-BR" data-theme="${esc(S.theme)}"><head><meta charset="utf-8"><title>${esc(S.brand.name)}</title><style>${css}</style></head><body style="overflow:auto"><div id="tab"></div></body></html>`);
+  w.document.close();
+  const d = w.document; const root = d.getElementById('tab');
+  const $t = (s) => d.querySelector(s);
+  const label = { UserName: 'Usuário', Password: 'Senha', URL: 'Endereço' };
+  let mode = 'view', td = null, reveal = false;
+  const tt = (msg, ic = 'check') => { d.querySelectorAll('.toast').forEach(t => t.remove()); const t = d.createElement('div'); t.className = 'toast'; t.innerHTML = icon(ic) + `<span>${esc(msg)}</span>`; d.body.appendChild(t); setTimeout(() => t.remove(), 2400); };
+  const head = () => `<div class="brand" style="margin-bottom:22px">${logoHtml()}${wordmark()}<span class="dbname" style="color:var(--faint);font-size:13px">· ${esc(file.name)}</span><span style="flex:1"></span><span class="status ${saveState}" id="tStatus"><span class="dot"></span><span class="stx">${{ ok: 'Salvo', busy: 'Salvando…', err: 'Erro ao salvar', dirty: 'Alterado' }[saveState]}</span></span></div>`;
+  function view() {
+    if (!db || !e.parentGroup) { root.innerHTML = `<div class="dwrap">${head()}<div class="empty">${icon('lock')}O cofre foi bloqueado ou a entrada não existe mais.</div></div>`; return; }
+    d.title = (fld(e, 'Title') || 'Entrada') + ' · ' + S.brand.name;
+    const keys = ['UserName', 'Password', 'URL', ...[...e.fields.keys()].filter(k => !STD.includes(k) && !HIDE.includes(k))];
+    const rows = keys.map(k => { const v = fld(e, k); const prot = k === 'Password' || e.fields.get(k) instanceof PV;
+      return `<div class="row"><div class="grow"><div class="lbl">${esc(label[k] || k)}</div><div class="val" data-v="${esc(k)}">${!v ? '<span style="color:var(--faint)">—</span>' : prot ? '<span class="masked">••••••••</span>' : k === 'URL' ? `<a href="#" data-site>${esc(v)}</a>` : esc(v)}</div></div>${v && prot ? `<button class="ibtn" data-eye="${esc(k)}" title="Mostrar">${icon('eye')}</button>` : ''}${v && k === 'URL' ? `<button class="ibtn" data-site title="Abrir site">${icon('link')}</button>` : ''}${v ? `<button class="ibtn" data-cp="${esc(k)}" title="Copiar">${icon('copy')}</button>` : ''}</div>`; }).join('');
+    const notes = fld(e, 'Notes');
+    root.innerHTML = `<div class="dwrap" style="max-width:820px">${head()}
+      <div class="dhead">${entryAvatar(e)}<div style="min-width:0"><h1>${esc(fld(e, 'Title') || '(sem título)')}</h1><div class="path">${esc(groupPath(e.parentGroup))}</div></div></div>
+      <div class="dactions"><button class="btn sm primary" id="tEdit">${icon('edit')} Editar</button><button class="btn sm" id="tClose">${icon('x')} Fechar guia</button></div>
       <div class="card">${rows}</div>
       ${notes ? `<div class="sect">Notas</div><div class="card"><div class="notes">${esc(notes)}</div></div>` : ''}
-      <div class="times">Criada em ${fmtDate(e.times.creationTime)} · Alterada em ${fmtDate(e.times.lastModTime)}<br>Esta guia fecha sozinha quando o cofre é bloqueado. Para ver alterações feitas depois, abra de novo.</div>
-    </div></body></html>`);
-  w.document.close();
-  const d = w.document;
-  const tt = (msg) => { d.querySelectorAll('.toast').forEach(t => t.remove()); const t = d.createElement('div'); t.className = 'toast'; t.innerHTML = icon('copy') + `<span>${esc(msg)}</span>`; d.body.appendChild(t); setTimeout(() => t.remove(), 2400); };
-  d.querySelectorAll('[data-cp]').forEach(b => b.onclick = () => {
-    const v = fld(e, b.dataset.cp); w.navigator.clipboard.writeText(v).then(() => tt(`Copiado: ${label[b.dataset.cp] || b.dataset.cp}${S.clip ? ` · apaga em ${S.clip} s` : ''}`));
-    if (S.clip) setTimeout(() => { try { w.navigator.clipboard.writeText(''); } catch {} }, S.clip * 1000);
-  });
-  d.querySelectorAll('[data-eye]').forEach(b => b.onclick = () => { const v = d.querySelector(`[data-v="${CSS.escape(b.dataset.eye)}"]`); const hid = !!v.querySelector('.masked'); v.innerHTML = hid ? pwHtml(fld(e, b.dataset.eye)) : '<span class="masked">••••••••</span>'; b.innerHTML = icon(hid ? 'eyeOff' : 'eye'); });
-  d.querySelectorAll('[data-site]').forEach(b => b.onclick = (ev) => { ev.preventDefault(); let u = url.trim(); if (!/^[a-z]+:\/\//i.test(u)) u = 'https://' + u; w.open(u, '_blank', 'noopener'); });
-  d.getElementById('tClose').onclick = () => w.close();
-  d.getElementById('tEdit').onclick = () => { if (!db) return tt('O cofre está bloqueado'); window.focus(); document.querySelectorAll('.cfg,.overlay').forEach(c => c.remove()); openInVault(e); startEdit(e); };
+      <div class="times">Criada em ${fmtDate(e.times.creationTime)} · Alterada em ${fmtDate(e.times.lastModTime)}<br>O que você salva aqui vai direto para o cofre (o mesmo arquivo da guia principal). Esta guia fecha sozinha quando o cofre é bloqueado.</div></div>`;
+    d.querySelectorAll('[data-cp]').forEach(b => b.onclick = () => {
+      w.navigator.clipboard.writeText(fld(e, b.dataset.cp)).then(() => tt(`Copiado: ${label[b.dataset.cp] || b.dataset.cp}${S.clip ? ` · apaga em ${S.clip} s` : ''}`, 'copy'));
+      if (S.clip) setTimeout(() => { try { w.navigator.clipboard.writeText(''); } catch {} }, S.clip * 1000);
+    });
+    d.querySelectorAll('[data-eye]').forEach(b => b.onclick = () => { const v = d.querySelector(`[data-v="${CSS.escape(b.dataset.eye)}"]`); const hid = !!v.querySelector('.masked'); v.innerHTML = hid ? pwHtml(fld(e, b.dataset.eye)) : '<span class="masked">••••••••</span>'; b.innerHTML = icon(hid ? 'eyeOff' : 'eye'); });
+    d.querySelectorAll('[data-site]').forEach(b => b.onclick = (ev) => { ev.preventDefault(); let u = fld(e, 'URL').trim(); if (!/^[a-z]+:\/\//i.test(u)) u = 'https://' + u; w.open(u, '_blank', 'noopener'); });
+    $t('#tClose').onclick = () => w.close();
+    $t('#tEdit').onclick = () => { td = makeDraft(e); reveal = false; mode = 'edit'; edit(); };
+  }
+  function edit() {
+    const x = td;
+    const opts = allGroups().filter(g => g.g !== binGroup() && !inBin(g.g)).map(g => `<option value="${g.g.uuid.id}" ${g.g === x.group ? 'selected' : ''}>${'   '.repeat(g.depth)}${esc(g.g.name)}</option>`).join('');
+    root.innerHTML = `<div class="dwrap" style="max-width:820px">${head()}
+      <div class="dhead">${entryAvatar(e)}<div><h1>Editar entrada</h1><div class="path">${esc(groupPath(e.parentGroup))}</div></div></div>
+      <div class="field"><label>Título</label><div class="input"><input id="fT" value="${esc(x.Title)}"></div></div>
+      <div class="field"><label>Usuário</label><div class="input"><input id="fU" value="${esc(x.UserName)}" spellcheck="false"></div></div>
+      <div class="field"><label>Senha</label><div class="input"><input id="fP" class="mono" type="${reveal ? 'text' : 'password'}" value="${esc(x.Password)}" spellcheck="false"><button class="ibtn" id="fEye" title="Mostrar">${icon(reveal ? 'eyeOff' : 'eye')}</button><button class="ibtn on" id="fGen" title="Gerar senha nova">${icon('dice')}</button></div></div>
+      <div class="field"><label>Endereço (URL)</label><div class="input"><input id="fL" value="${esc(x.URL)}" spellcheck="false"></div></div>
+      <div class="field"><label>Pasta</label><div class="input"><select id="fG">${opts}</select></div></div>
+      <div class="field"><label>Notas</label><div class="input"><textarea id="fN">${esc(x.Notes)}</textarea></div></div>
+      <div class="field"><label>Código 2FA (opcional)</label><div class="input"><input id="fO" class="mono" value="${esc(x.otp)}" spellcheck="false"></div></div>
+      <div class="field"><label>Etiquetas (separadas por vírgula)</label><div class="input"><input id="fTg" value="${esc(x.tags)}"></div></div>
+      <div class="field"><label>Campos extras</label><div id="cfs"></div><button class="btn sm ghost" id="addCf" style="align-self:flex-start">${icon('plus')} Adicionar campo</button></div>
+      <div class="formbar"><button class="btn ghost" id="fCancel">Cancelar</button><button class="btn primary" id="fSave">${icon('check')} Salvar</button></div></div>`;
+    const bind = (id, k) => { $t(id).oninput = (ev) => { x[k] = ev.target.value; }; };
+    bind('#fT', 'Title'); bind('#fU', 'UserName'); bind('#fP', 'Password'); bind('#fL', 'URL'); bind('#fN', 'Notes'); bind('#fO', 'otp'); bind('#fTg', 'tags');
+    $t('#fG').onchange = (ev) => { x.group = findGroup(ev.target.value); };
+    $t('#fEye').onclick = () => { reveal = !reveal; $t('#fP').type = reveal ? 'text' : 'password'; $t('#fEye').innerHTML = icon(reveal ? 'eyeOff' : 'eye'); };
+    $t('#fGen').onclick = () => { x.Password = genPassword(S.gen); $t('#fP').value = x.Password; reveal = true; $t('#fP').type = 'text'; tt('Senha nova gerada', 'dice'); };
+    const cf = () => {
+      $t('#cfs').innerHTML = x.custom.map((c, i) => `<div class="cfrow"><div class="input"><input data-ck="${i}" value="${esc(c.k)}" placeholder="Nome"></div><div class="input"><input data-cv="${i}" value="${esc(c.v)}" placeholder="Valor" type="${c.p ? 'password' : 'text'}"></div><button class="ibtn ${c.p ? 'on' : ''}" data-cp2="${i}" title="Protegido">${icon('lock')}</button><button class="ibtn" data-cx="${i}" title="Remover">${icon('x')}</button></div>`).join('');
+      d.querySelectorAll('[data-ck]').forEach(i => i.oninput = () => { x.custom[+i.dataset.ck].k = i.value; });
+      d.querySelectorAll('[data-cv]').forEach(i => i.oninput = () => { x.custom[+i.dataset.cv].v = i.value; });
+      d.querySelectorAll('[data-cp2]').forEach(b => b.onclick = () => { const c = x.custom[+b.dataset.cp2]; c.p = !c.p; cf(); });
+      d.querySelectorAll('[data-cx]').forEach(b => b.onclick = () => { x.custom.splice(+b.dataset.cx, 1); cf(); });
+    };
+    cf(); $t('#addCf').onclick = () => { x.custom.push({ k: '', v: '', p: false }); cf(); };
+    $t('#fCancel').onclick = () => { mode = 'view'; view(); };
+    $t('#fSave').onclick = () => {
+      if (!db) return tt('O cofre está bloqueado', 'lock');
+      const r = applyDraft(x); if (r.err) return tt(r.err, 'info');
+      if (V.entry === e && V.editing) V.editing = false;
+      touch(); rerender(); mode = 'view'; view(); tt('Salvo no cofre');
+    };
+  }
+  // atualiza a guia quando você volta para ela (ex.: mudou algo na guia principal)
+  w.addEventListener('focus', () => { if (mode === 'view') view(); });
+  tabRefreshers.add(() => { if (w.closed) return; const st = d.getElementById('tStatus'); if (st) { st.className = 'status ' + saveState; st.querySelector('.stx').textContent = { ok: 'Salvo', busy: 'Salvando…', err: 'Erro ao salvar', dirty: 'Alterado' }[saveState]; } });
+  view();
 }
+const tabRefreshers = new Set();
 
 // menu do botão direito numa entrada
 function entryMenu(e, x, y, extra = []) {
@@ -840,32 +888,34 @@ const DUP_MODES = {
   exact: { label: 'Idênticas (usuário + senha + site)', key: e => { const p = fld(e, 'Password'); return p ? [hostOf(fld(e, 'URL')) || norm(fld(e, 'Title')), norm(fld(e, 'UserName')), p].join('\u0001') : ''; } },
   pass: { label: 'Mesma senha (reuso)', key: e => fld(e, 'Password') },
 };
-function findDups(mode) {
+function findDups(mode, scope) {
   const m = new Map();
-  for (const e of db.getDefaultGroup().allEntries()) {
+  for (const e of (scope && scope.parentGroup !== undefined && findGroup(scope.uuid.id) ? scope : db.getDefaultGroup()).allEntries()) {
     if (inBin(e)) continue; const k = DUP_MODES[mode].key(e); if (!k) continue;
     if (!m.has(k)) m.set(k, []); m.get(k).push(e);
   }
   return [...m.values()].filter(a => a.length > 1).map(a => a.sort((x, y) => y.times.lastModTime - x.times.lastModTime)).sort((a, b) => b.length - a.length || fld(a[0], 'Title').localeCompare(fld(b[0], 'Title'), 'pt-BR'));
 }
-function openDuplicates(mode = 'site') {
+function openDuplicates(mode = 'site', scope = (V.group && V.group !== binGroup() && V.group !== db.getDefaultGroup() ? V.group : null)) {
   document.querySelectorAll('.cfg').forEach(c => c.remove());
   const c = document.createElement('div'); c.className = 'cfg';
   const sel = new Set();
   c.innerHTML = `<div class="cfg-head">${icon('dup')}<h2>Duplicados</h2><button class="btn sm" id="dClose">Fechar ${icon('x')}</button></div>
+    <div class="dupscope">${icon('folder')}<span>Procurar em:</span><select id="dScope"><option value="">Todo o cofre</option>${allGroups().filter(x => x.g !== binGroup() && !inBin(x.g) && x.g !== db.getDefaultGroup()).map(x => `<option value="${x.g.uuid.id}" ${scope === x.g ? 'selected' : ''}>${'\u00A0\u00A0\u00A0'.repeat(x.depth - 1)}${esc(x.g.name)}</option>`).join('')}</select><span class="d">(inclui as subpastas)</span></div>
     <div class="tabs">${Object.entries(DUP_MODES).map(([k, v]) => `<button class="tab ${k === mode ? 'on' : ''}" data-m="${k}">${v.label}</button>`).join('')}</div>
     <div class="cfg-body"><div class="pg" id="dpg"></div></div>
     <div class="dupbar"><span id="dCount">Nenhuma marcada</span><span style="flex:1"></span><button class="btn sm" id="dupMove">${icon('move')} Mover marcadas</button><button class="btn sm danger" id="dupDel">${icon('trash')} Excluir marcadas</button></div>`;
   document.body.appendChild(c);
   const close = () => { c.remove(); popBack(close); rerender(); };
   pushBack(close); $('#dClose', c).onclick = close;
+  $('#dScope', c).onchange = (ev) => { scope = findGroup(ev.target.value); sel.clear(); draw(); };
   c.querySelectorAll('[data-m]').forEach(b => b.onclick = () => { mode = b.dataset.m; sel.clear(); c.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t === b)); draw(); });
   const upd = () => { $('#dCount', c).textContent = sel.size ? `${sel.size} marcada(s)` : 'Nenhuma marcada'; };
   function draw() {
-    const groups = findDups(mode); const pg = $('#dpg', c);
+    const groups = findDups(mode, scope); const pg = $('#dpg', c);
     const extra = groups.reduce((s, a) => s + a.length - 1, 0);
-    if (!groups.length) { pg.innerHTML = `<div class="empty">${icon('check')}Nenhum duplicado encontrado neste critério.</div>`; upd(); return; }
-    pg.innerHTML = `<div class="dupsum"><div><b>${groups.length}</b> grupo(s) · <b>${extra}</b> entrada(s) a mais</div>
+    if (!groups.length) { pg.innerHTML = `<div class="empty">${icon('check')}Nenhum duplicado encontrado neste critério${scope ? ` dentro de "${esc(scope.name)}"` : ''}.</div>`; upd(); return; }
+    pg.innerHTML = `<div class="dupsum"><div><b>${groups.length}</b> grupo(s) · <b>${extra}</b> entrada(s) a mais${scope ? ` em <b>${esc(scope.name)}</b>` : ''}</div>
       ${mode !== 'pass' ? `<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn sm primary" id="dMergeAll">${icon('merge')} Mesclar todos os grupos</button><button class="btn sm" id="dKeepAll">${icon('check')} Manter a mais recente de cada grupo</button></div>` : `<div class="d" style="color:var(--muted);font-size:14px">Senhas repetidas em lugares diferentes são um risco: se uma vazar, as outras também ficam expostas. Vale trocar.</div>`}</div>`
       + groups.map((a, gi) => `<div class="card dupg"><div class="duph"><div class="grow"><b>${esc(fld(a[0], 'Title') || '(sem título)')}</b> <span class="cnt">${a.length}×</span><div class="d">${esc(mode === 'pass' ? 'mesma senha' : (fld(a[0], 'UserName') || 'sem usuário') + (hostOf(fld(a[0], 'URL')) ? ' · ' + hostOf(fld(a[0], 'URL')) : ''))}</div></div>
         ${mode !== 'pass' ? `<button class="btn sm primary" data-merge="${gi}">${icon('merge')} Mesclar em uma</button><button class="btn sm" data-keep="${gi}">Manter a mais recente</button>` : ''}</div>
@@ -1054,12 +1104,19 @@ function renderEdit() {
   $('#fSave').onclick = () => commitEdit();
   if (!d.entry) setTimeout(() => { const a = document.activeElement; if ((!a || a === document.body || a.id === 'bAdd' || a.id === 'fab') && $('#fT')) $('#fT').focus(); }, 30);
 }
-function commitEdit() {
-  const d = draft;
-  if (!d.Title.trim()) { toast('Dê um título à entrada', 'info'); $('#fT').focus(); return; }
+function makeDraft(e) {
+  return {
+    entry: e, group: e.parentGroup,
+    Title: fld(e, 'Title'), UserName: fld(e, 'UserName'), Password: fld(e, 'Password'), URL: fld(e, 'URL'), Notes: fld(e, 'Notes'), otp: fld(e, 'otp'), tags: (e.tags || []).join(', '),
+    custom: [...e.fields.keys()].filter(k => !STD.includes(k) && k !== 'otp').map(k => ({ k, v: fld(e, k), p: e.fields.get(k) instanceof PV })),
+  };
+}
+function applyDraft(d) {
+  if (!d.Title.trim()) return { err: 'Dê um título à entrada' };
   const names = d.custom.map(c => c.k.trim()).filter(Boolean);
-  if (names.some(n => STD.includes(n) || n === 'otp') || new Set(names).size !== names.length) { toast('Nomes de campos extras repetidos ou reservados', 'info'); return; }
+  if (names.some(n => STD.includes(n) || n === 'otp') || new Set(names).size !== names.length) return { err: 'Nomes de campos extras repetidos ou reservados' };
   let e = d.entry;
+  if (e && !e.parentGroup) return { err: 'Esta entrada não existe mais' };
   if (e) e.pushHistory(); else e = db.createEntry(d.group);
   e.fields.set('Title', d.Title.trim()); e.fields.set('UserName', d.UserName); e.fields.set('Password', PV.fromString(d.Password));
   e.fields.set('URL', d.URL.trim()); e.fields.set('Notes', d.Notes);
@@ -1068,8 +1125,13 @@ function commitEdit() {
   d.custom.forEach(c => { const k = c.k.trim(); if (k) e.fields.set(k, c.p ? PV.fromString(c.v) : c.v); });
   e.tags = d.tags.split(',').map(s => s.trim()).filter(Boolean);
   e.times.update();
-  if (d.entry && d.group !== e.parentGroup) db.move(e, d.group);
-  V.entry = e; V.editing = false; V.reveal = false; draft = null;
+  if (d.entry && d.group && d.group !== e.parentGroup) db.move(e, d.group);
+  return { e };
+}
+function commitEdit() {
+  const r = applyDraft(draft);
+  if (r.err) { toast(r.err, 'info'); if (/título/.test(r.err)) $('#fT').focus(); return; }
+  V.entry = r.e; V.editing = false; V.reveal = false; draft = null;
   touch(); renderGroups(); renderList(); renderDetail(); toast('Entrada salva');
 }
 
