@@ -298,3 +298,12 @@ body.dragging .gitem{transition:none}
 .treeprev{max-height:180px;overflow:auto;background:var(--bg2);border:1px solid var(--line);border-radius:12px;padding:10px 14px;font-size:15px;line-height:1.8}
 .destlist{max-height:240px;overflow:auto;border:1px solid var(--line);border-radius:12px;padding:6px 12px}
 .destlist .check .ic,.destlist .check .gicon{width:18px;height:18px;display:inline-block}
+
+.list{position:relative}
+.selbar{position:absolute;left:8px;right:8px;bottom:calc(10px + env(safe-area-inset-bottom));display:flex;align-items:center;gap:6px;padding:8px 8px 8px 4px;background:var(--surface);border:1px solid var(--accent);border-radius:16px;box-shadow:var(--shadow);z-index:7}
+.selbar b{font-size:15px;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.selbar .btn.sm{padding:0 10px}
+.vault:has(.selbar) .fab{display:none}
+@media (max-width:860px){.eitem{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}}
+
+@media (max-width:860px){.topbar .brand{min-width:0;overflow:hidden}.topbar .wordmark{overflow:hidden;text-overflow:ellipsis}.topbar .status{flex:0 0 auto}}

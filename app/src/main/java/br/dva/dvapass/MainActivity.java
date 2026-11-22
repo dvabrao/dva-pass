@@ -27,6 +27,7 @@ import android.util.Base64;
 import android.view.Window;
 import android.view.WindowManager;
 import android.webkit.JavascriptInterface;
+import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
@@ -62,7 +63,8 @@ import javax.crypto.spec.GCMParameterSpec;
 public class MainActivity extends Activity {
     private static final String HOST = "https://dvapass.local/";
     private static final String KEY_ALIAS = "dvapass_bio";
-    private static final int REQ_OPEN_DB = 11, REQ_OPEN_KEY = 12, REQ_CREATE = 13, REQ_SAVE_AS = 14;
+    private static final int REQ_OPEN_DB = 11, REQ_OPEN_KEY = 12, REQ_CREATE = 13, REQ_SAVE_AS = 14, REQ_CHOOSER = 15;
+    private ValueCallback<Uri[]> chooserCb;
 
     private WebView web;
     private long lastBack = 0;
@@ -112,7 +114,17 @@ public class MainActivity extends Activity {
                 openExternal(r.getUrl().toString()); return true;
             }
         });
-        web.setWebChromeClient(new WebChromeClient());
+        web.setWebChromeClient(new WebChromeClient() {
+            // seletor de imagem (logomarca e ícones de pasta)
+            @Override
+            public boolean onShowFileChooser(WebView v, ValueCallback<Uri[]> cb, FileChooserParams params) {
+                if (chooserCb != null) chooserCb.onReceiveValue(null);
+                chooserCb = cb; externalUi = true;
+                try { startActivityForResult(params.createIntent(), REQ_CHOOSER); }
+                catch (Exception e) { chooserCb = null; externalUi = false; return false; }
+                return true;
+            }
+        });
         web.addJavascriptInterface(new Bridge(), "AndroidApp");
         setContentView(web);
         web.loadUrl(HOST + "index.html");
@@ -342,6 +354,10 @@ public class MainActivity extends Activity {
     protected void onActivityResult(int req, int res, Intent data) {
         super.onActivityResult(req, res, data);
         externalUi = false;
+        if (req == REQ_CHOOSER) {
+            if (chooserCb != null) chooserCb.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(res, data));
+            chooserCb = null; return;
+        }
         String id = pendingId; pendingId = null;
         String payload = pendingData; pendingData = null;
         if (id == null) return;

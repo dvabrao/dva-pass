@@ -93,13 +93,13 @@ const promptBox = (title, label, value = '') => dialog({
 const backStack = [];
 function pushBack(fn) { backStack.push(fn); }
 function popBack(fn) { const i = backStack.lastIndexOf(fn); if (i >= 0) backStack.splice(i, 1); }
-window.DVA_back = () => { const fn = backStack.pop(); if (fn) { fn(); return true; } if (db && V.group && $('#vault')) return goUp(); return false; };
+window.DVA_back = () => { const fn = backStack.pop(); if (fn) { fn(); return true; } if (db && V.selMode && $('#vault')) { V.sel.clear(); V.selMode = false; renderList(); return true; } if (db && V.group && $('#vault')) return goUp(); return false; };
 
 // ================= estado =================
 let file = null;          // arquivo atual
 let db = null;            // Kdbx aberto
 let loadedHash = null;    // hash do arquivo como lido/gravado por último
-const V = { group: null, query: '', entry: null, pane: 'list', editing: false, reveal: false, collapsed: new Set(), sel: new Set() };
+const V = { group: null, query: '', entry: null, pane: 'list', editing: false, reveal: false, collapsed: new Set(), sel: new Set(), selMode: false };
 let saveState = 'ok', saveTimer = null, saving = null;
 let lastAct = Date.now(), hiddenAt = 0;
 
@@ -306,7 +306,7 @@ function renderVault() {
       <span class="status ok" id="status"><span class="dot"></span><span class="stx">Salvo</span></span>
       <button class="ibtn hide-m" id="bAdd" title="Nova entrada (Ctrl+N)">${icon('plus')}</button>
       <button class="ibtn" id="bDup" title="Achar duplicados">${icon('dup')}</button>
-      <button class="ibtn" id="bGen" title="Gerador de senhas">${icon('dice')}</button>
+      <button class="ibtn hide-m" id="bGen" title="Gerador de senhas">${icon('dice')}</button>
       <button class="ibtn" id="bSet" title="Configurações">${icon('gear')}</button>
       <button class="ibtn" id="bLock" title="Bloquear (Ctrl+L)">${icon('lock')}</button>
     </header>
@@ -555,9 +555,10 @@ function renderGroups() {
   el.querySelector('[data-all]').onclick = () => { V.group = null; V.query = ''; V.sel.clear(); rerender(); setPane('list'); };
   el.querySelectorAll('[data-g]').forEach(b => {
     const g = b.dataset.g === (bin && bin.uuid.id) ? bin : findGroup(b.dataset.g);
-    b.onclick = () => { V.group = g; V.query = ''; V.sel.clear(); rerender(); setPane('list'); };
-    b.oncontextmenu = (ev) => { ev.preventDefault(); groupMenu(g, ev.clientX, ev.clientY); };
-    let lp; b.addEventListener('touchstart', (ev) => { const t = ev.touches[0]; lp = setTimeout(() => groupMenu(g, t.clientX, t.clientY), 550); }, { passive: true });
+    let lp, lpFired = false;
+    b.onclick = () => { if (lpFired) { lpFired = false; return; } V.group = g; V.query = ''; V.sel.clear(); V.selMode = false; rerender(); setPane('list'); };
+    b.oncontextmenu = (ev) => { ev.preventDefault(); if (!lpFired) groupMenu(g, ev.clientX, ev.clientY); };
+    b.addEventListener('touchstart', (ev) => { lpFired = false; const t = ev.touches[0]; lp = setTimeout(() => { lpFired = true; groupMenu(g, t.clientX, t.clientY); }, 550); }, { passive: true });
     ['touchend', 'touchmove', 'touchcancel'].forEach(x => b.addEventListener(x, () => clearTimeout(lp), { passive: true }));
     if (b.draggable) b.addEventListener('dragstart', (ev) => startDrag(ev, { groups: [g], entries: [] }));
     bindDropTarget(b, () => g);
@@ -613,7 +614,13 @@ function renderList() {
   ul.scrollTop = scroll;
   ul.querySelectorAll('[data-i]').forEach(b => {
     const i = +b.dataset.i, e = list[i];
+    let lp, lpFired = false;
+    b.addEventListener('touchstart', () => { lpFired = false; lp = setTimeout(() => { lpFired = true; V.selMode = true; V.sel.add(e); if (navigator.vibrate) navigator.vibrate(30); renderList(); }, 500); }, { passive: true });
+    ['touchend', 'touchmove', 'touchcancel'].forEach(x => b.addEventListener(x, () => clearTimeout(lp), { passive: true }));
+    b.oncontextmenu = (ev) => { if (V.selMode || lpFired) ev.preventDefault(); };
     b.onclick = (ev) => {
+      if (lpFired) { lpFired = false; return; }
+      if (V.selMode) { V.sel.has(e) ? V.sel.delete(e) : V.sel.add(e); if (!V.sel.size) V.selMode = false; renderList(); return; }
       if (ev.ctrlKey || ev.metaKey) { V.sel.size === 0 && V.entry && list.includes(V.entry) && V.sel.add(V.entry); V.sel.has(e) ? V.sel.delete(e) : V.sel.add(e); anchorIdx = i; }
       else if (ev.shiftKey && anchorIdx >= 0) { V.sel.clear(); const [a, z] = [Math.min(anchorIdx, i), Math.max(anchorIdx, i)]; for (let k = a; k <= z; k++) V.sel.add(list[k]); }
       else { V.sel.clear(); anchorIdx = i; V.entry = e; V.editing = false; V.reveal = false; renderList(); renderDetail(); setPane('detail'); return; }
@@ -624,11 +631,23 @@ function renderList() {
   });
   ul.querySelectorAll('[data-sg]').forEach(b => {
     const c = g.groups.find(x => x.uuid.id === b.dataset.sg);
-    b.onclick = () => { V.group = c; V.sel.clear(); rerender(); };
-    b.oncontextmenu = (ev) => { ev.preventDefault(); groupMenu(c, ev.clientX, ev.clientY); };
+    let lp, lpFired = false;
+    b.addEventListener('touchstart', (ev) => { lpFired = false; const t = ev.touches[0]; lp = setTimeout(() => { lpFired = true; groupMenu(c, t.clientX, t.clientY); }, 550); }, { passive: true });
+    ['touchend', 'touchmove', 'touchcancel'].forEach(x => b.addEventListener(x, () => clearTimeout(lp), { passive: true }));
+    b.onclick = () => { if (lpFired) { lpFired = false; return; } V.group = c; V.sel.clear(); V.selMode = false; rerender(); };
+    b.oncontextmenu = (ev) => { ev.preventDefault(); if (!lpFired) groupMenu(c, ev.clientX, ev.clientY); };
     b.addEventListener('dragstart', (ev) => startDrag(ev, { groups: [c], entries: [] }));
     bindDropTarget(b, () => c);
   });
+  if (V.selMode && V.sel.size) {
+    const bar = document.createElement('div'); bar.className = 'selbar';
+    bar.innerHTML = `<button class="ibtn" id="sbX" title="Cancelar">${icon('x')}</button><b>${V.sel.size} ${V.sel.size > 1 ? 'selecionadas' : 'selecionada'}</b><button class="btn sm" id="sbAll" title="Selecionar todas">${icon('check')}</button><button class="btn sm" id="sbMove">${icon('move')} Mover</button><button class="btn sm danger" id="sbDel">${icon('trash')}</button>`;
+    el.appendChild(bar);
+    $('#sbX').onclick = () => { V.sel.clear(); V.selMode = false; renderList(); };
+    $('#sbAll').onclick = () => { list.forEach(x => V.sel.add(x)); renderList(); };
+    $('#sbMove').onclick = async () => { const tg = await pickGroup('Mover para'); if (!tg) return; dragItems = { groups: [], entries: [...V.sel] }; V.selMode = false; doDrop(tg); };
+    $('#sbDel').onclick = async () => { const n = V.sel.size; if (!await confirmBox(`Excluir ${n} entrada(s)?`, 'Elas vão para a Lixeira.', 'Excluir', true)) return; V.sel.forEach(x => db.remove(x)); V.sel.clear(); V.selMode = false; V.entry = null; touch(); rerender(); toast(`${n} na Lixeira`, 'trash'); };
+  } else if (V.selMode && !V.sel.size) V.selMode = false;
   const q = $('#q');
   q.oninput = () => { V.query = q.value; const pos = q.selectionStart; renderList(); const nq = $('#q'); nq.focus(); nq.setSelectionRange(pos, pos); };
   if (searchFocused) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); }
@@ -751,7 +770,7 @@ const HIDE = ['otp', 'TimeOtp-Secret-Base32', 'TimeOtp-Length', 'TimeOtp-Period'
 function renderDetail() {
   const el = $('#detail'); if (!el || !db) return; clearInterval(otpTimer);
   if (V.editing) return renderEdit();
-  if (V.sel.size > 1) return renderBulk();
+  if (V.sel.size > 1 && !V.selMode) return renderBulk();
   const e = V.entry;
   if (!e || !e.parentGroup) { V.entry = null; el.innerHTML = `<div class="dempty">${logoHtml()}${wordmark()}<div>Escolha uma entrada para ver os detalhes.</div></div>`; return; }
   const title = fld(e, 'Title'), user = fld(e, 'UserName'), pw = fld(e, 'Password'), url = fld(e, 'URL'), notes = fld(e, 'Notes');
