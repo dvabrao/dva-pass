@@ -80,7 +80,7 @@ function dialog({ title, body = '', html = '', buttons = [{ label: 'OK', value: 
     document.body.appendChild(o); pushBack(closer);
     o.addEventListener('keydown', e => { if (e.key === 'Escape') closer(); if (e.key === 'Enter' && e.target.tagName === 'INPUT') { const p = $('.dialog > .acts .primary', o); p && p.click(); } });
     onOpen && onOpen(o);
-    const f = $('input,select,textarea', o); f && setTimeout(() => f.focus(), 30);
+    const f = $('input,select,textarea', o); f && setTimeout(() => { const a = document.activeElement; if (!a || !o.contains(a)) f.focus(); }, 30);
   });
 }
 const confirmBox = (title, body, ok = 'Confirmar', danger) => dialog({ title, body, buttons: [{ label: 'Cancelar', value: false, cls: 'ghost' }, { label: ok, value: true, cls: danger ? 'danger' : 'primary' }] }).then(v => !!v);
