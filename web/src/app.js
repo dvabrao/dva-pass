@@ -617,7 +617,15 @@ function renderList() {
     let lp, lpFired = false;
     b.addEventListener('touchstart', () => { lpFired = false; lp = setTimeout(() => { lpFired = true; V.selMode = true; V.sel.add(e); if (navigator.vibrate) navigator.vibrate(30); renderList(); }, 500); }, { passive: true });
     ['touchend', 'touchmove', 'touchcancel'].forEach(x => b.addEventListener(x, () => clearTimeout(lp), { passive: true }));
-    b.oncontextmenu = (ev) => { if (V.selMode || lpFired) ev.preventDefault(); };
+    b.oncontextmenu = (ev) => {
+      ev.preventDefault(); if (V.selMode || lpFired) return;
+      entryMenu(e, ev.clientX, ev.clientY, inBin(e) ? [] : [
+        ['chevron', 'Abrir', () => { V.sel.clear(); V.entry = e; V.editing = false; V.reveal = false; rerender(); setPane('detail'); }],
+        ['edit', 'Editar', () => { V.entry = e; startEdit(e); renderList(); }],
+        ['move', 'Mover para…', async () => { const tg = await pickGroup('Mover para', e.parentGroup); if (tg) { dragItems = { groups: [], entries: V.sel.has(e) ? [...V.sel] : [e] }; doDrop(tg); } }],
+        ['trash', 'Excluir', async () => { if (!await confirmBox('Excluir entrada?', `"${fld(e, 'Title')}" vai para a Lixeira.`, 'Excluir', true)) return; db.remove(e); if (V.entry === e) V.entry = null; touch(); rerender(); toast('Movida para a Lixeira', 'trash'); }, 'danger'],
+      ]);
+    };
     b.onclick = (ev) => {
       if (lpFired) { lpFired = false; return; }
       if (V.selMode) { V.sel.has(e) ? V.sel.delete(e) : V.sel.add(e); if (!V.sel.size) V.selMode = false; renderList(); return; }
@@ -675,6 +683,113 @@ async function pickGroup(title, current) {
   return id ? findGroup(id) : null;
 }
 
+// ---------- ver entrada numa janela (sem sair da tela atual) ----------
+function entryPopup(e, onOpenVault) {
+  const title = fld(e, 'Title'), user = fld(e, 'UserName'), pw = fld(e, 'Password'), url = fld(e, 'URL'), notes = fld(e, 'Notes');
+  const custom = [...e.fields.keys()].filter(k => !STD.includes(k) && !HIDE.includes(k));
+  const row = (lbl, val, k, prot) => `<div class="row"><div class="grow"><div class="lbl">${esc(lbl)}</div><div class="val" ${prot ? `data-pv="${esc(k)}"` : ''}>${prot ? '<span class="masked">••••••••</span>' : esc(val) || '<span style="color:var(--faint)">—</span>'}</div></div>${prot ? `<button class="ibtn" data-eye="${esc(k)}">${icon('eye')}</button>` : ''}${val ? `<button class="ibtn" data-cp="${esc(k)}" title="Copiar">${icon('copy')}</button>` : ''}</div>`;
+  return dialog({
+    title: title || '(sem título)', body: `${groupPath(e.parentGroup)} · alterada ${fmtDate(e.times.lastModTime)}`,
+    html: `<div class="card" style="margin:0">${row('Usuário', user, 'UserName')}${row('Senha', pw, 'Password', true)}${url ? row('Endereço', url, 'URL') : ''}${custom.map(k => row(k, fld(e, k), k, e.fields.get(k) instanceof PV)).join('')}</div>
+      ${notes ? `<div class="sect">Notas</div><div class="card" style="margin:0"><div class="notes">${esc(notes)}</div></div>` : ''}`,
+    buttons: [...(url ? [{ label: 'Abrir site', cls: 'ghost', value: () => { openSite(url); return false; } }] : []), ...(onOpenVault ? [{ label: 'Abrir no cofre', cls: '', value: 'vault' }] : []), { label: 'Fechar', cls: 'primary', value: null }],
+    onOpen: (o) => {
+      o.querySelector('.dialog').classList.add('wide');
+      o.querySelectorAll('[data-cp]').forEach(b => b.onclick = () => copy(fld(e, b.dataset.cp), { UserName: 'Usuário', Password: 'Senha', URL: 'Endereço' }[b.dataset.cp] || b.dataset.cp));
+      o.querySelectorAll('[data-eye]').forEach(b => b.onclick = () => { const v = o.querySelector(`[data-pv="${CSS.escape(b.dataset.eye)}"]`); const hid = !!v.querySelector('.masked'); v.innerHTML = hid ? pwHtml(fld(e, b.dataset.eye)) : '<span class="masked">••••••••</span>'; b.innerHTML = icon(hid ? 'eyeOff' : 'eye'); });
+    },
+  }).then(v => { if (v === 'vault' && onOpenVault) onOpenVault(); });
+}
+function openSite(url) { let u = url.trim(); if (!/^[a-z]+:\/\//i.test(u)) u = 'https://' + u; platform.openUrl(u); }
+function openInVault(e) { V.group = null; V.query = ''; V.sel.clear(); V.selMode = false; V.entry = e; V.editing = false; V.reveal = false; rerender(); setPane('detail'); }
+
+// menu do botão direito numa entrada
+function entryMenu(e, x, y, extra = []) {
+  const url = fld(e, 'URL');
+  popMenu([
+    ...extra,
+    ['eye', 'Ver em janela', () => entryPopup(e, () => { document.querySelectorAll('.cfg').forEach(c => c.remove()); openInVault(e); })],
+    ...(url ? [['link', 'Abrir o site em nova guia', () => openSite(url)]] : []),
+    ['copy', 'Copiar usuário', () => copy(fld(e, 'UserName'), 'Usuário')],
+    ['key', 'Copiar senha', () => copy(fld(e, 'Password'), 'Senha')],
+  ], x, y);
+}
+
+// ---------- mesclar entradas repetidas em uma só ----------
+const MF = [['Title', 'Título'], ['UserName', 'Usuário'], ['Password', 'Senha'], ['URL', 'Endereço']];
+function uniq(arr) { const out = []; for (const v of arr) if (v && !out.includes(v)) out.push(v); return out; }
+function mergeEntries(a, target, choice, notesMode, keepPw) {
+  const others = a.filter(x => x !== target);
+  const oldPws = a.map(x => [fld(x, 'Password'), x.times.lastModTime]);
+  target.pushHistory();
+  for (const [k] of MF) if (choice[k] !== undefined) target.fields.set(k, k === 'Password' ? PV.fromString(choice[k]) : choice[k]);
+  const notes = uniq(a.map(x => fld(x, 'Notes').trim()));
+  target.fields.set('Notes', notesMode === 'join' ? notes.join('\n\n— — —\n\n') : (notesMode || fld(target, 'Notes')));
+  const finalPw = fld(target, 'Password');
+  const freeName = (base) => { let n = base, i = 2; while (target.fields.has(n)) n = `${base} (${i++})`; return n; };
+  for (const o of others) {
+    for (const [k, v] of o.fields) {
+      if (STD.includes(k)) continue;
+      if (!target.fields.has(k)) { target.fields.set(k, v instanceof PV ? PV.fromString(v.getText()) : v); continue; }
+      if (txt(target.fields.get(k)) !== txt(v)) target.fields.set(freeName(k), v instanceof PV ? PV.fromString(v.getText()) : v);
+    }
+    for (const [n, b] of o.binaries || []) { let nn = n, i = 2; while (target.binaries.has(nn)) nn = n.replace(/(\.[^.]*)?$/, ` (${i++})$1`); target.binaries.set(nn, b); }
+    target.tags = uniq([...(target.tags || []), ...(o.tags || [])]);
+  }
+  if (keepPw) for (const [op, t] of oldPws)
+    if (op && op !== finalPw && ![...target.fields.values()].some(v => txt(v) === op))
+      target.fields.set(freeName(`Senha antiga (${new Date(t).toLocaleDateString('pt-BR')})`), PV.fromString(op));
+  target.times.update();
+  others.forEach(o => db.remove(o));
+}
+function autoChoice(a, target) {
+  const c = {};
+  for (const [k] of MF) { const v = fld(target, k) || uniq(a.map(x => fld(x, k)))[0]; if (v) c[k] = v; }
+  return c;
+}
+async function mergeDialog(a) {
+  let target = a[0]; let choice = autoChoice(a, target);
+  const notes = uniq(a.map(x => fld(x, 'Notes').trim()));
+  let notesMode = notes.length > 1 ? 'join' : notes[0] || '';
+  const pws = uniq(a.map(x => fld(x, 'Password')));
+  let keepPw = pws.length > 1;
+  const extraFields = uniq(a.flatMap(x => [...x.fields.keys()].filter(k => !STD.includes(k))));
+  const att = a.reduce((n, x) => n + (x.binaries ? x.binaries.size : 0), 0);
+  const ok = await dialog({
+    title: `Mesclar ${a.length} entradas em uma`,
+    body: 'Escolha o que fica. As outras entradas vão para a Lixeira (dá para restaurar), e a versão anterior fica no histórico.',
+    html: `<div id="mg"></div>`,
+    buttons: [{ label: 'Cancelar', value: null, cls: 'ghost' }, { label: 'Mesclar', cls: 'primary', value: true }],
+    onOpen: (o) => {
+      o.querySelector('.dialog').classList.add('wide');
+      const draw = () => {
+        const opt = (k, v, label, isPw) => `<label class="mopt"><input type="radio" name="m_${k}" value="${esc(v)}" ${choice[k] === v ? 'checked' : ''}><span class="${isPw ? 'pw' : ''}" ${isPw ? `data-pwv="${esc(v)}"` : ''}>${isPw ? '••••••••' : esc(v)}</span><span class="from">${esc(label)}</span></label>`;
+        const src = (k, v) => a.filter(x => fld(x, k) === v).map(x => new Date(x.times.lastModTime).toLocaleDateString('pt-BR')).join(', ');
+        let h = `<div class="sect" style="margin-top:0">Entrada principal (fica na pasta dela)</div>
+          ${a.map((x, i) => `<label class="mopt"><input type="radio" name="m_target" value="${i}" ${x === target ? 'checked' : ''}><span><b>${esc(fld(x, 'Title'))}</b></span><span class="from">${esc(groupPath(x.parentGroup))} · ${fmtDate(x.times.lastModTime)}</span></label>`).join('')}`;
+        for (const [k, l] of MF) {
+          const vals = uniq(a.map(x => fld(x, k)));
+          if (vals.length > 1) h += `<div class="sect">${l} — escolha um${k === 'Password' ? ` <button class="btn sm ghost" id="mEye" type="button">${icon('eye')} mostrar</button>` : ''}</div>${vals.map(v => opt(k, v, 'de ' + src(k, v), k === 'Password')).join('')}`;
+        }
+        if (notes.length > 1) h += `<div class="sect">Notas</div><label class="mopt"><input type="radio" name="m_notes" value="join" ${notesMode === 'join' ? 'checked' : ''}><span><b>Juntar todas</b></span><span class="from">${notes.length} notas diferentes</span></label>${notes.map((n, i) => `<label class="mopt"><input type="radio" name="m_notes" value="${i}" ${notesMode === n ? 'checked' : ''}><span>${esc(n.length > 90 ? n.slice(0, 90) + '…' : n)}</span></label>`).join('')}`;
+        if (pws.length > 1) h += `<label class="check" style="margin-top:12px"><input type="checkbox" id="mKeep" ${keepPw ? 'checked' : ''}> Guardar as outras senhas como campos extras protegidos ("Senha antiga")</label>`;
+        const tags = uniq(a.flatMap(x => x.tags || []));
+        h += `<div class="msum">${extraFields.length ? `• Campos extras juntados: ${extraFields.map(esc).join(', ')}<br>` : ''}${att ? `• Anexos juntados: ${att}<br>` : ''}${tags.length ? `• Etiquetas: ${tags.map(esc).join(', ')}<br>` : ''}• Ficam: 1 entrada · vão para a Lixeira: ${a.length - 1}</div>`;
+        $('#mg', o).innerHTML = h;
+        o.querySelectorAll('[name=m_target]').forEach(r => r.onchange = () => { target = a[+r.value]; choice = autoChoice(a, target); draw(); });
+        for (const [k] of MF) o.querySelectorAll(`[name=m_${k}]`).forEach(r => r.onchange = () => { choice[k] = r.value; });
+        o.querySelectorAll('[name=m_notes]').forEach(r => r.onchange = () => { notesMode = r.value === 'join' ? 'join' : notes[+r.value]; });
+        $('#mKeep', o) && ($('#mKeep', o).onchange = (ev) => { keepPw = ev.target.checked; });
+        $('#mEye', o) && ($('#mEye', o).onclick = () => o.querySelectorAll('[data-pwv]').forEach(s => { s.innerHTML = s.innerHTML.includes('•') ? pwHtml(s.dataset.pwv) : '••••••••'; }));
+      };
+      draw();
+    },
+  });
+  if (!ok) return false;
+  mergeEntries(a, target, choice, notesMode, keepPw); touch();
+  toast('Entradas mescladas', 'merge'); return true;
+}
+
 // ---------- duplicados ----------
 function hostOf(u) {
   u = (u || '').trim(); if (!u) return '';
@@ -712,14 +827,22 @@ function openDuplicates(mode = 'site') {
     const extra = groups.reduce((s, a) => s + a.length - 1, 0);
     if (!groups.length) { pg.innerHTML = `<div class="empty">${icon('check')}Nenhum duplicado encontrado neste critério.</div>`; upd(); return; }
     pg.innerHTML = `<div class="dupsum"><div><b>${groups.length}</b> grupo(s) · <b>${extra}</b> entrada(s) a mais</div>
-      ${mode !== 'pass' ? `<button class="btn sm primary" id="dKeepAll">${icon('check')} Manter a mais recente de cada grupo</button>` : `<div class="d" style="color:var(--muted);font-size:14px">Senhas repetidas em lugares diferentes são um risco: se uma vazar, as outras também ficam expostas. Vale trocar.</div>`}</div>`
+      ${mode !== 'pass' ? `<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn sm primary" id="dMergeAll">${icon('merge')} Mesclar todos os grupos</button><button class="btn sm" id="dKeepAll">${icon('check')} Manter a mais recente de cada grupo</button></div>` : `<div class="d" style="color:var(--muted);font-size:14px">Senhas repetidas em lugares diferentes são um risco: se uma vazar, as outras também ficam expostas. Vale trocar.</div>`}</div>`
       + groups.map((a, gi) => `<div class="card dupg"><div class="duph"><div class="grow"><b>${esc(fld(a[0], 'Title') || '(sem título)')}</b> <span class="cnt">${a.length}×</span><div class="d">${esc(mode === 'pass' ? 'mesma senha' : (fld(a[0], 'UserName') || 'sem usuário') + (hostOf(fld(a[0], 'URL')) ? ' · ' + hostOf(fld(a[0], 'URL')) : ''))}</div></div>
-        ${mode !== 'pass' ? `<button class="btn sm" data-keep="${gi}">Manter a mais recente</button>` : ''}</div>
-        ${a.map((e, ei) => `<label class="duprow"><input type="checkbox" data-gi="${gi}" data-ei="${ei}" ${sel.has(e) ? 'checked' : ''}>${entryAvatar(e)}<div class="grow"><div class="t">${esc(fld(e, 'Title') || '(sem título)')}${ei === 0 ? ' <span class="tag">mais recente</span>' : ''}</div>
+        ${mode !== 'pass' ? `<button class="btn sm primary" data-merge="${gi}">${icon('merge')} Mesclar em uma</button><button class="btn sm" data-keep="${gi}">Manter a mais recente</button>` : ''}</div>
+        ${a.map((e, ei) => `<label class="duprow" data-row="${gi}:${ei}" title="Botão direito: mais opções"><input type="checkbox" data-gi="${gi}" data-ei="${ei}" ${sel.has(e) ? 'checked' : ''}>${entryAvatar(e)}<div class="grow"><div class="t">${esc(fld(e, 'Title') || '(sem título)')}${ei === 0 ? ' <span class="tag">mais recente</span>' : ''}</div>
           <div class="d">${esc(fld(e, 'UserName') || '—')} · ${esc(groupPath(e.parentGroup))} · alterada ${fmtDate(e.times.lastModTime)}${fld(e, 'Password') !== fld(a[0], 'Password') ? ' · <b style="color:var(--danger)">senha diferente</b>' : ''}</div></div>
-          <button class="ibtn" data-open="${gi}:${ei}" title="Abrir">${icon('chevron')}</button></label>`).join('')}</div>`).join('');
+          <button class="ibtn" data-view="${gi}:${ei}" title="Ver em janela">${icon('eye')}</button><button class="ibtn" data-open="${gi}:${ei}" title="Abrir no cofre">${icon('chevron')}</button></label>`).join('')}</div>`).join('');
     pg.querySelectorAll('[data-gi]').forEach(cb => cb.onchange = () => { const e = groups[+cb.dataset.gi][+cb.dataset.ei]; cb.checked ? sel.add(e) : sel.delete(e); upd(); });
-    pg.querySelectorAll('[data-open]').forEach(b => b.onclick = (ev) => { ev.preventDefault(); const [gi, ei] = b.dataset.open.split(':').map(Number); const e = groups[gi][ei]; close(); V.group = null; V.query = ''; V.sel.clear(); V.entry = e; V.editing = false; rerender(); setPane('detail'); });
+    pg.querySelectorAll('[data-open]').forEach(b => b.onclick = (ev) => { ev.preventDefault(); const [gi, ei] = b.dataset.open.split(':').map(Number); const e = groups[gi][ei]; close(); openInVault(e); });
+    const at = (s) => { const [gi, ei] = s.split(':').map(Number); return groups[gi][ei]; };
+    pg.querySelectorAll('[data-view]').forEach(b => b.onclick = (ev) => { ev.preventDefault(); const e = at(b.dataset.view); entryPopup(e, () => { close(); openInVault(e); }); });
+    pg.querySelectorAll('[data-row]').forEach(r => r.oncontextmenu = (ev) => { ev.preventDefault(); const e = at(r.dataset.row); entryMenu(e, ev.clientX, ev.clientY, [['chevron', 'Abrir no cofre', () => { close(); openInVault(e); }]]); });
+    pg.querySelectorAll('[data-merge]').forEach(b => b.onclick = async () => { const a = groups[+b.dataset.merge]; if (await mergeDialog(a)) { a.forEach(e => sel.delete(e)); draw(); } });
+    $('#dMergeAll', pg) && ($('#dMergeAll', pg).onclick = async () => {
+      if (!await confirmBox(`Mesclar os ${groups.length} grupos?`, 'Em cada grupo fica a entrada mais recente, completada com o que faltar nas outras: notas juntadas, campos extras e anexos somados, e as senhas diferentes guardadas como "Senha antiga". As demais vão para a Lixeira e a versão anterior fica no histórico.', 'Mesclar todos')) return;
+      groups.forEach(a => mergeEntries(a, a[0], autoChoice(a, a[0]), 'join', true)); sel.clear(); touch(); draw(); toast(`${groups.length} grupo(s) mesclado(s)`, 'merge');
+    });
     pg.querySelectorAll('[data-keep]').forEach(b => b.onclick = async () => {
       const a = groups[+b.dataset.keep]; const rest = a.slice(1);
       if (!await confirmBox('Manter só a mais recente?', `${rest.length} entrada(s) deste grupo vão para a Lixeira. Dá para restaurar depois.`, 'Confirmar', true)) return;
